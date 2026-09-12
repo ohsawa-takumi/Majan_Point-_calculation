@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>雀卓精算</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@600;800&family=Zen+Kaku+Gothic+New:wght@400;500;700;900&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --bg:#0f2a1f;
+    --panel:#153826;
+    --panel2:#1c4531;
+    --tile:#f2ecd9;
+    --tile-ink:#1c2b22;
+    --text:#f2eee1;
+    --text-dim:#a9c0b0;
+    --gold:#c9a227;
+    --red:#c1443c;
+    --line: rgba(242,238,225,0.14);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:
+      radial-gradient(circle at 20% 0%, #163a29 0%, transparent 55%),
+      radial-gradient(circle at 100% 100%, #0d2419 0%, transparent 60%),
+      var(--bg);
+    color:var(--text);
+    font-family:'Zen Kaku Gothic New', sans-serif;
+    font-variant-numeric: tabular-nums;
+    min-height:100vh;
+    display:flex;
+    justify-content:center;
+    padding:18px 12px 40px;
+  }
+  .app{ width:100%; max-width:460px; }
+
+  header{ text-align:center; margin-bottom:14px; }
+  h1{
+    font-family:'Shippori Mincho', serif;
+    font-weight:800;
+    font-size:24px;
+    letter-spacing:.14em;
+    margin:0 0 2px;
+    color:var(--tile);
+  }
+  .sub{ font-size:11px; color:var(--text-dim); letter-spacing:.08em; }
+
+  .meta-row{ display:flex; gap:8px; margin-top:12px; }
+  .meta-box{
+    flex:1; background:var(--panel); border:1px solid var(--line);
+    border-radius:10px; padding:8px 6px; text-align:center;
+  }
+  .meta-label{ font-size:10px; color:var(--text-dim); margin-bottom:2px; }
+  .meta-val{ font-size:15px; font-weight:700; }
+  .meta-box button{
+    background:none; border:1px solid var(--line); color:var(--text);
+    border-radius:6px; width:22px; height:22px; font-size:13px; line-height:1;
+    cursor:pointer; margin:0 2px;
+  }
+  .meta-box .stepper{ display:flex; align-items:center; justify-content:center; gap:4px; }
+  .meta-box button:disabled{ opacity:.3; cursor:default; }
+
+  .over-banner{
+    display:none; background:var(--red); color:var(--tile); border-radius:12px;
+    padding:12px 14px; text-align:center; margin-bottom:14px; font-weight:700; font-size:13.5px;
+  }
+  .over-banner.show{ display:block; }
+  .over-banner button{
+    display:block; margin:8px auto 0; background:var(--tile); color:var(--red); border:none;
+    border-radius:8px; padding:7px 16px; font-weight:700; cursor:pointer; font-size:12.5px;
+  }
+
+  .hint{ text-align:center; font-size:10.5px; color:var(--text-dim); margin:2px 0 12px; }
+
+  .board{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px; }
+  .seat{
+    background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    padding:10px 10px 12px; position:relative; transition:box-shadow .25s, border-color .25s;
+  }
+  .seat.dealer{
+    border-color:var(--gold);
+    box-shadow:0 0 0 1px var(--gold), 0 6px 18px rgba(201,162,39,.18);
+  }
+  .seat.negative .score{ color:var(--red); }
+  .seat-top{ display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+  .wind-tile{
+    width:26px; height:26px; border-radius:5px; background:var(--tile); color:var(--tile-ink);
+    display:flex; align-items:center; justify-content:center;
+    font-family:'Shippori Mincho', serif; font-weight:800; font-size:15px;
+    box-shadow: inset 0 -3px 0 rgba(0,0,0,.15), 0 2px 3px rgba(0,0,0,.35);
+    cursor:pointer; user-select:none; flex-shrink:0;
+  }
+  .seat.dealer .wind-tile{ background:var(--gold); }
+  .riichi-dot{
+    width:22px; height:14px; border-radius:7px; border:1.5px solid var(--red);
+    cursor:pointer; flex-shrink:0; display:flex; align-items:center; justify-content:center;
+    font-size:8px; font-weight:700; color:var(--red); letter-spacing:.02em;
+  }
+  .riichi-dot.on{ background:var(--red); color:var(--tile); }
+  .name{
+    font-size:13px; font-weight:500; color:var(--text-dim); outline:none;
+    border-bottom:1px dashed transparent; margin-bottom:4px; cursor:text;
+  }
+  .name:focus{ border-color:var(--line); color:var(--text); }
+  .score{ font-size:25px; font-weight:900; letter-spacing:.02em; }
+  .quick{ display:flex; gap:6px; margin-top:8px; }
+  .quick button{
+    flex:1; background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    border-radius:8px; padding:4px 0; font-size:12.5px; cursor:pointer;
+  }
+  .quick button:disabled{ opacity:.35; cursor:default; }
+
+  .total-row{ text-align:center; font-size:11px; color:var(--text-dim); margin-bottom:16px; }
+  .total-row span{ color:var(--text); font-weight:700; }
+
+  .panel{
+    background:var(--panel); border:1px solid var(--line); border-radius:16px;
+    padding:16px; margin-bottom:14px;
+  }
+  .panel h2{ font-size:13px; margin:0 0 12px; font-weight:700; color:var(--text-dim); letter-spacing:.05em; }
+
+  .mode-row{ display:flex; gap:8px; margin-bottom:14px; }
+  .mode-btn{
+    flex:1; padding:12px 0; border-radius:10px; border:1.5px solid var(--line);
+    background:var(--panel2); color:var(--text); font-size:15px; font-weight:700; cursor:pointer;
+  }
+  .mode-btn.active{ border-color:var(--gold); background:var(--gold); color:#1c2b22; }
+
+  .field-label{ font-size:11.5px; color:var(--text-dim); margin:12px 0 6px; }
+  .chip-row{ display:flex; flex-wrap:wrap; gap:7px; }
+  .chip{
+    padding:7px 13px; border-radius:20px; border:1.5px solid var(--line);
+    background:var(--panel2); color:var(--text); font-size:13px; cursor:pointer;
+  }
+  .chip.selected{ border-color:var(--gold); background:var(--gold); color:#1c2b22; font-weight:700; }
+  .chip:disabled{ opacity:.3; cursor:default; }
+
+  .han-row{ display:flex; align-items:center; justify-content:space-between; margin-top:8px; font-size:13px; }
+  .han-row select{
+    background:var(--bg); border:1px solid var(--line); color:var(--text);
+    border-radius:8px; padding:6px 8px; font-size:13px; font-family:inherit;
+  }
+
+  .confirm-btn{
+    width:100%; margin-top:16px; background:var(--gold); border:none; color:#1c2b22;
+    font-weight:800; border-radius:10px; padding:12px 0; font-size:15px; cursor:pointer;
+  }
+  .confirm-btn:disabled{ opacity:.35; cursor:default; }
+  .clear-btn{
+    width:100%; margin-top:8px; background:none; border:1px solid var(--line); color:var(--text-dim);
+    border-radius:10px; padding:8px 0; font-size:12.5px; cursor:pointer;
+  }
+
+  #logList{ list-style:none; margin:0; padding:0; max-height:150px; overflow-y:auto; }
+  #logList li{ font-size:12.5px; padding:6px 0; border-bottom:1px solid var(--line); color:var(--text-dim); }
+  #logList li:last-child{ border-bottom:none; color:var(--text); }
+  #undoBtn{
+    width:100%; margin-top:10px; background:var(--panel2); border:1px solid var(--line);
+    color:var(--text); border-radius:8px; padding:8px 0; cursor:pointer; font-size:13px;
+  }
+
+  details.settings{ background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:12px 16px; }
+  details.settings summary{ font-size:12.5px; color:var(--text-dim); cursor:pointer; }
+  .set-row{ display:flex; align-items:center; justify-content:space-between; margin-top:10px; font-size:12.5px; }
+  .set-row input{
+    width:90px; background:var(--bg); border:1px solid var(--line); color:var(--text);
+    border-radius:6px; padding:5px 8px; font-size:13px; text-align:right;
+  }
+  #resetBtn{
+    margin-top:12px; width:100%; background:var(--red); border:none; color:var(--tile);
+    border-radius:8px; padding:8px 0; cursor:pointer; font-size:13px; font-weight:700;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <h1>雀卓精算</h1>
+    <div class="sub">MAHJONG SCOREBOARD — 半荘・25000点持ち</div>
+    <div class="meta-row">
+      <div class="meta-box">
+        <div class="meta-label">局</div>
+        <div class="stepper">
+          <button id="kyokuMinus">−</button>
+          <span class="meta-val" id="kyokuVal">東1局</span>
+          <button id="kyokuPlus">+</button>
+        </div>
+      </div>
+      <div class="meta-box">
+        <div class="meta-label">本場</div>
+        <div class="stepper">
+          <button id="honbaMinus">−</button>
+          <span class="meta-val" id="honbaVal">0</span>
+          <button id="honbaPlus">+</button>
+        </div>
+      </div>
+      <div class="meta-box">
+        <div class="meta-label">供託棒</div>
+        <div class="meta-val" id="potVal">0</div>
+      </div>
+    </div>
+  </header>
+
+  <div class="over-banner" id="overBanner">
+    <div id="overReason"></div>
+    <button id="overResetBtn">新規対局として点数をリセット</button>
+  </div>
+
+  <div class="board" id="board"></div>
+  <div class="total-row">合計チェック(本来は一定): <span id="totalVal"></span></div>
+  <div class="hint">牌をタップで親を指定／リーチ棒は各プレイヤーの「立直」ボタンで管理できます</div>
+
+  <div class="panel">
+    <h2>上がり入力</h2>
+    <div class="mode-row">
+      <button class="mode-btn" id="modeRon" data-mode="ron">ロン</button>
+      <button class="mode-btn" id="modeTsumo" data-mode="tsumo">ツモ</button>
+    </div>
+    <div id="formBody"></div>
+    <button class="confirm-btn" id="confirmBtn" disabled>この上がりを反映する</button>
+    <button class="clear-btn" id="clearFormBtn">入力をクリア</button>
+  </div>
+
+  <div class="panel">
+    <h2>履歴</h2>
+    <ul id="logList"></ul>
+    <button id="undoBtn">ひとつ戻す(元に戻す)</button>
+  </div>
+
+  <div class="panel">
+    <h2>データの保存・読み込み</h2>
+    <div class="hint" style="margin-bottom:10px;">「保存」でスマホ・PCにファイルがダウンロードされます。好きなフォルダに移動して保管し、「読み込み」であとから復元できます。</div>
+    <button class="confirm-btn" id="saveBtn" style="margin-top:0;">💾 現在のデータを保存(ダウンロード)</button>
+    <label class="clear-btn" id="loadLabel" style="display:block; text-align:center; margin-top:8px; cursor:pointer;">
+      📂 保存したデータを読み込む
+      <input type="file" id="loadInput" accept="application/json" style="display:none;">
+    </label>
+    <div class="hint" style="margin:14px 0 10px;">Excelで開いて集計・グラフ化したい場合はこちら(このアプリへの読み込みには使えません)。</div>
+    <button class="clear-btn" id="excelBtn" style="border-color:var(--gold); color:var(--gold);">📊 Excel形式(.xlsx)でダウンロード</button>
+  </div>
+
+  <details class="settings">
+    <summary>設定</summary>
+    <div class="set-row">
+      <span>開始点数</span>
+      <input type="number" id="startScoreInput" value="25000" step="1000">
+    </div>
+    <button id="resetBtn">スコアをリセット(新規対局)</button>
+  </details>
+
+</div>
+
+<script>
+(function(){
+  const windNames = ['東','南','西','北'];
+
+  const RON_CHILD  = {1:1000, 2:2000, 3:4000, 4:8000,  6:12000, 8:18000, 11:24000, 13:32000};
+  const RON_PARENT = {1:1500, 2:3000, 3:6000, 4:12000, 6:18000, 8:27000, 11:36000, 13:48000};
+  // ツモ時、子が上がった場合に「子(非親・非和了)」が払う額
+  const TSUMO_FROM_CHILD  = {1:300, 2:500, 3:1000, 4:2000, 6:3000, 8:4000, 11:6000, 13:8000};
+  // ツモ時、子が上がった場合に「親」が払う額。親が上がった場合は全員がこの額を払う(オール)
+  const TSUMO_FROM_PARENT = {1:500, 2:1000, 3:2000, 4:4000, 6:6000, 8:8000, 11:12000, 13:16000};
+
+  function bucketKey(han){
+    if(han >= 13) return 13;
+    if(han >= 11) return 11;
+    if(han >= 8) return 8;
+    if(han >= 6) return 6;
+    if(han >= 4) return 4;
+    return han; // 1,2,3
+  }
+
+  let state, history, formState;
+
+  function freshState(startScore){
+    return {
+      players: [
+        {name:'プレイヤー1', score:startScore, riichi:false},
+        {name:'プレイヤー2', score:startScore, riichi:false},
+        {name:'プレイヤー3', score:startScore, riichi:false},
+        {name:'プレイヤー4', score:startScore, riichi:false},
+      ],
+      dealerIndex: 0,
+      round: '東',
+      kyokuNum: 1,
+      honba: 0,
+      pot: 0,
+      startScore: startScore,
+      gameOver: false,
+      overReason: '',
+      logs: [],
+      scoreHistory: []
+    };
+  }
+  state = freshState(25000);
+  history = [];
+  const MAX_HISTORY = 25;
+
+  function freshForm(){ return {mode:null, winners:[], han:{}, loser:null, potCollector:null}; }
+  formState = freshForm();
+
+  const boardEl = document.getElementById('board');
+  const logListEl = document.getElementById('logList');
+  const formBodyEl = document.getElementById('formBody');
+  const confirmBtn = document.getElementById('confirmBtn');
+
+  function snapshot(){ return JSON.parse(JSON.stringify(state)); }
+  function pushHistory(){
+    history.push(snapshot());
+    if(history.length > MAX_HISTORY) history.shift();
+  }
+
+  function checkGameOver(){
+    if(state.gameOver) return;
+    const negPlayer = state.players.find(p => p.score < 0);
+    if(negPlayer){
+      state.gameOver = true;
+      state.overReason = `${negPlayer.name} の持ち点がマイナスになったため終局です。`;
+    }
+  }
+
+  function addLog(text){
+    state.logs.push(text);
+    if(!state.scoreHistory) state.scoreHistory = [];
+    state.scoreHistory.push({
+      kyoku: state.round + state.kyokuNum + '局',
+      honba: state.honba,
+      event: text,
+      scores: state.players.map(p=>p.score)
+    });
+    renderLog();
+  }
+  function renderLog(){
+    logListEl.innerHTML = '';
+    state.logs.forEach(text=>{
+      const li = document.createElement('li');
+      li.textContent = text;
+      logListEl.appendChild(li);
+    });
+    logListEl.scrollTop = logListEl.scrollHeight;
+  }
+
+  // ---------------- board render ----------------
+  function render(){
+    boardEl.innerHTML = '';
+    state.players.forEach((p, i)=>{
+      const wind = windNames[(i - state.dealerIndex + 4) % 4];
+      const isDealer = i === state.dealerIndex;
+      const seat = document.createElement('div');
+      seat.className = 'seat' + (isDealer ? ' dealer' : '') + (p.score < 0 ? ' negative' : '');
+      seat.innerHTML = `
+        <div class="seat-top">
+          <div class="wind-tile" data-action="setDealer" data-idx="${i}">${wind}</div>
+          <div class="riichi-dot ${p.riichi ? 'on':''}" data-action="toggleRiichi" data-idx="${i}">立直</div>
+        </div>
+        <div class="name" contenteditable="true" data-idx="${i}">${p.name}</div>
+        <div class="score">${p.score.toLocaleString()}</div>
+        <div class="quick">
+          <button data-action="adj" data-idx="${i}" data-amt="-1000" ${state.gameOver?'disabled':''}>−1000</button>
+          <button data-action="adj" data-idx="${i}" data-amt="1000" ${state.gameOver?'disabled':''}>+1000</button>
+        </div>
+      `;
+      boardEl.appendChild(seat);
+    });
+
+    document.getElementById('kyokuVal').textContent = state.round + state.kyokuNum + '局';
+    document.getElementById('honbaVal').textContent = state.honba;
+    document.getElementById('potVal').textContent = state.pot;
+    const total = state.players.reduce((s,p)=>s+p.score,0) + state.pot;
+    document.getElementById('totalVal').textContent = total.toLocaleString();
+
+    const overBanner = document.getElementById('overBanner');
+    if(state.gameOver){
+      overBanner.classList.add('show');
+      document.getElementById('overReason').textContent = '🈵 終局: ' + state.overReason;
+    } else {
+      overBanner.classList.remove('show');
+    }
+
+    document.getElementById('kyokuPlus').disabled = state.gameOver;
+    document.getElementById('kyokuMinus').disabled = state.gameOver;
+    document.getElementById('honbaPlus').disabled = state.gameOver;
+    document.getElementById('honbaMinus').disabled = state.gameOver;
+
+    boardEl.querySelectorAll('[data-action="setDealer"]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        if(state.gameOver) return;
+        pushHistory();
+        state.dealerIndex = parseInt(el.dataset.idx);
+        render();
+      });
+    });
+    boardEl.querySelectorAll('[data-action="toggleRiichi"]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        if(state.gameOver) return;
+        const idx = parseInt(el.dataset.idx);
+        const p = state.players[idx];
+        pushHistory();
+        if(!p.riichi){
+          p.score -= 1000; p.riichi = true; state.pot += 1000;
+          addLog(`${p.name} 立直(供託+1000)`);
+        } else {
+          p.score += 1000; p.riichi = false; state.pot -= 1000;
+          addLog(`${p.name} 立直取り消し`);
+        }
+        checkGameOver();
+        render();
+      });
+    });
+    boardEl.querySelectorAll('[data-action="adj"]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        if(state.gameOver) return;
+        const idx = parseInt(el.dataset.idx);
+        const amt = parseInt(el.dataset.amt);
+        pushHistory();
+        state.players[idx].score += amt;
+        addLog(`${state.players[idx].name} ${amt>0?'+':''}${amt}点(手動)`);
+        checkGameOver();
+        render();
+      });
+    });
+    boardEl.querySelectorAll('.name').forEach(el=>{
+      el.addEventListener('blur', ()=>{
+        const idx = parseInt(el.dataset.idx);
+        const val = el.textContent.trim();
+        if(val) state.players[idx].name = val;
+        render();
+      });
+    });
+  }
+
+  // ---------------- kyoku / honba controls ----------------
+  document.getElementById('kyokuPlus').addEventListener('click', ()=>{
+    if(state.gameOver) return;
+    pushHistory();
+    state.kyokuNum++;
+    if(state.kyokuNum > 4){
+      if(state.round === '東'){
+        state.round = '南'; state.kyokuNum = 1;
+      } else {
+        state.kyokuNum = 4;
+        state.gameOver = true;
+        state.overReason = '半荘終了(南4局が終わりました)。';
+        render();
+        addLog('半荘終了');
+        return;
+      }
+    }
+    state.dealerIndex = (state.dealerIndex + 1) % 4;
+    state.honba = 0;
+    render();
+    addLog('次の局へ(親交代)');
+  });
+  document.getElementById('kyokuMinus').addEventListener('click', ()=>{
+    if(state.gameOver) return;
+    if(state.round === '東' && state.kyokuNum <= 1) return;
+    pushHistory();
+    state.kyokuNum--;
+    if(state.kyokuNum < 1){
+      state.round = '東'; state.kyokuNum = 4;
+    }
+    state.dealerIndex = (state.dealerIndex + 3) % 4;
+    render();
+  });
+  document.getElementById('honbaPlus').addEventListener('click', ()=>{
+    if(state.gameOver) return;
+    pushHistory(); state.honba++; render();
+  });
+  document.getElementById('honbaMinus').addEventListener('click', ()=>{
+    if(state.gameOver || state.honba<=0) return;
+    pushHistory(); state.honba--; render();
+  });
+
+  document.getElementById('undoBtn').addEventListener('click', ()=>{
+    if(history.length === 0) return;
+    state = history.pop();
+    render();
+    addLog('元に戻しました');
+  });
+
+  function doReset(){
+    const start = parseInt(document.getElementById('startScoreInput').value) || 25000;
+    history = [];
+    state = freshState(start);
+    formState = freshForm();
+    render();
+    renderForm();
+    renderLog();
+    addLog('新規対局を開始しました(各プレイヤー ' + start.toLocaleString() + '点)');
+  }
+  document.getElementById('resetBtn').addEventListener('click', doReset);
+  document.getElementById('overResetBtn').addEventListener('click', doReset);
+
+  // ---------------- agari form ----------------
+  function hanOptions(selected){
+    let html = '';
+    for(let h=1; h<=13; h++){
+      const label = h===13 ? '13飜以上' : h+'飜';
+      html += `<option value="${h}" ${selected==h?'selected':''}>${label}</option>`;
+    }
+    return html;
+  }
+
+  function setMode(mode){
+    if(state.gameOver) return;
+    formState = freshForm();
+    formState.mode = mode;
+    document.getElementById('modeRon').classList.toggle('active', mode==='ron');
+    document.getElementById('modeTsumo').classList.toggle('active', mode==='tsumo');
+    renderForm();
+  }
+  document.getElementById('modeRon').addEventListener('click', ()=>setMode('ron'));
+  document.getElementById('modeTsumo').addEventListener('click', ()=>setMode('tsumo'));
+  document.getElementById('clearFormBtn').addEventListener('click', ()=>{
+    formState = freshForm();
+    document.getElementById('modeRon').classList.remove('active');
+    document.getElementById('modeTsumo').classList.remove('active');
+    renderForm();
+  });
+
+  function toggleWinner(idx){
+    const pos = formState.winners.indexOf(idx);
+    if(formState.mode === 'tsumo'){
+      formState.winners = (pos === -1) ? [idx] : [];
+    } else {
+      if(pos === -1) formState.winners.push(idx);
+      else formState.winners.splice(pos,1);
+      if(formState.loser === idx) formState.loser = null;
+    }
+    if(formState.winners.indexOf(formState.potCollector) === -1){
+      formState.potCollector = formState.winners[0] ?? null;
+    }
+    renderForm();
+  }
+  function setLoser(idx){
+    formState.loser = idx;
+    renderForm();
+  }
+
+  function renderForm(){
+    if(!formState.mode){
+      formBodyEl.innerHTML = '<div class="field-label">まず「ロン」か「ツモ」を選んでください</div>';
+      confirmBtn.disabled = true;
+      return;
+    }
+    let html = '<div class="field-label">和了した人' + (formState.mode==='ron' ? '(ダブロンの場合は複数選択可)' : '') + '</div>';
+    html += '<div class="chip-row">';
+    state.players.forEach((p,i)=>{
+      const selected = formState.winners.includes(i);
+      html += `<button class="chip ${selected?'selected':''}" data-action="winner" data-idx="${i}">${p.name}${i===state.dealerIndex?'(親)':''}</button>`;
+    });
+    html += '</div>';
+
+    formState.winners.forEach(i=>{
+      const p = state.players[i];
+      const val = formState.han[i] || 1;
+      html += `<div class="han-row"><span>${p.name} の飜数</span><select data-action="han" data-idx="${i}">${hanOptions(val)}</select></div>`;
+      formState.han[i] = formState.han[i] || val;
+    });
+
+    if(formState.mode === 'ron' && formState.winners.length > 0){
+      html += '<div class="field-label">放銃した人</div>';
+      html += '<div class="chip-row">';
+      state.players.forEach((p,i)=>{
+        if(formState.winners.includes(i)) return;
+        const selected = formState.loser === i;
+        html += `<button class="chip ${selected?'selected':''}" data-action="loser" data-idx="${i}">${p.name}</button>`;
+      });
+      html += '</div>';
+    }
+
+    if(formState.winners.length > 1){
+      html += '<div class="field-label">供託棒(リーチ棒)を獲得する人</div>';
+      html += '<div class="chip-row">';
+      formState.winners.forEach(i=>{
+        const selected = formState.potCollector === i;
+        html += `<button class="chip ${selected?'selected':''}" data-action="potc" data-idx="${i}">${state.players[i].name}</button>`;
+      });
+      html += '</div>';
+    }
+
+    formBodyEl.innerHTML = html;
+
+    formBodyEl.querySelectorAll('[data-action="winner"]').forEach(el=>{
+      el.addEventListener('click', ()=> toggleWinner(parseInt(el.dataset.idx)));
+    });
+    formBodyEl.querySelectorAll('[data-action="loser"]').forEach(el=>{
+      el.addEventListener('click', ()=> setLoser(parseInt(el.dataset.idx)));
+    });
+    formBodyEl.querySelectorAll('[data-action="potc"]').forEach(el=>{
+      el.addEventListener('click', ()=>{ formState.potCollector = parseInt(el.dataset.idx); renderForm(); });
+    });
+    formBodyEl.querySelectorAll('[data-action="han"]').forEach(el=>{
+      el.addEventListener('change', ()=>{ formState.han[parseInt(el.dataset.idx)] = parseInt(el.value); });
+    });
+
+    const ready = formState.winners.length > 0 &&
+      (formState.mode === 'tsumo' || formState.loser !== null) &&
+      !state.gameOver;
+    confirmBtn.disabled = !ready;
+  }
+
+  confirmBtn.addEventListener('click', ()=>{
+    if(confirmBtn.disabled) return;
+    pushHistory();
+
+    const honba = state.honba;
+
+    if(formState.mode === 'ron'){
+      const loserIdx = formState.loser;
+      const loser = state.players[loserIdx];
+      let totalFromLoser = 0;
+      const parts = [];
+      formState.winners.forEach(wi=>{
+        const winner = state.players[wi];
+        const han = formState.han[wi] || 1;
+        const bucket = bucketKey(han);
+        const isDealerWinner = wi === state.dealerIndex;
+        const table = isDealerWinner ? RON_PARENT : RON_CHILD;
+        let amt = table[bucket] + honba*300;
+        winner.score += amt;
+        totalFromLoser += amt;
+        parts.push(`${winner.name}(${han}飜)+${amt.toLocaleString()}`);
+      });
+      loser.score -= totalFromLoser;
+
+      let potMsg = '';
+      if(state.pot > 0){
+        const collector = state.players[formState.potCollector ?? formState.winners[0]];
+        collector.score += state.pot;
+        potMsg = `／供託${state.pot}点は${collector.name}が獲得`;
+        state.pot = 0;
+      }
+      addLog(`ロン: ${loser.name}より ${parts.join('、')}(本場${honba})${potMsg}`);
+    } else {
+      const wi = formState.winners[0];
+      const winner = state.players[wi];
+      const han = formState.han[wi] || 1;
+      const bucket = bucketKey(han);
+      const isDealerWinner = wi === state.dealerIndex;
+      let totalGain = 0;
+      state.players.forEach((p,i)=>{
+        if(i === wi) return;
+        let base = isDealerWinner ? TSUMO_FROM_PARENT[bucket] : (i === state.dealerIndex ? TSUMO_FROM_PARENT[bucket] : TSUMO_FROM_CHILD[bucket]);
+        const amt = base + honba*100;
+        p.score -= amt;
+        totalGain += amt;
+      });
+      winner.score += totalGain;
+
+      let potMsg = '';
+      if(state.pot > 0){
+        winner.score += state.pot;
+        potMsg = `／供託${state.pot}点を獲得`;
+        state.pot = 0;
+      }
+      addLog(`ツモ: ${winner.name}(${han}飜) 合計+${totalGain.toLocaleString()}点(本場${honba})${potMsg}`);
+    }
+
+    state.players.forEach(p=>p.riichi=false);
+    checkGameOver();
+
+    formState = freshForm();
+    document.getElementById('modeRon').classList.remove('active');
+    document.getElementById('modeTsumo').classList.remove('active');
+    render();
+    renderForm();
+  });
+
+  // ---------------- save / load ----------------
+  function pad(n){ return String(n).padStart(2,'0'); }
+
+  document.getElementById('saveBtn').addEventListener('click', ()=>{
+    const payload = { savedAt: new Date().toISOString(), state: state };
+    const json = JSON.stringify(payload, null, 2);
+    const blob = new Blob([json], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const now = new Date();
+    const fname = `mahjong_score_${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.json`;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    addLog(`データを保存しました(${fname})`);
+  });
+
+  document.getElementById('loadInput').addEventListener('change', (e)=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      try{
+        const payload = JSON.parse(reader.result);
+        const loaded = payload.state || payload;
+        if(!loaded.players || loaded.players.length !== 4) throw new Error('invalid');
+        const fresh = freshState(loaded.startScore || 25000);
+        state = Object.assign(fresh, loaded);
+        if(!Array.isArray(state.logs)) state.logs = [];
+        if(!Array.isArray(state.scoreHistory)) state.scoreHistory = [];
+        history = [];
+        formState = freshForm();
+        render();
+        renderForm();
+        renderLog();
+        addLog(`データを読み込みました(${file.name})`);
+      }catch(err){
+        alert('ファイルを読み込めませんでした。保存したデータのファイルか確認してください。');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  });
+
+  document.getElementById('excelBtn').addEventListener('click', ()=>{
+    if(typeof XLSX === 'undefined'){
+      alert('Excel出力用ライブラリの読み込みに失敗しました。通信環境を確認してもう一度お試しください。');
+      return;
+    }
+    const names = state.players.map(p=>p.name);
+    const historyRows = [
+      ['局', '本場', '内容', ...names],
+      ...(state.scoreHistory || []).map(r => [r.kyoku, r.honba, r.event, ...r.scores])
+    ];
+    const wsHistory = XLSX.utils.aoa_to_sheet(historyRows);
+
+    const summaryRows = [
+      ['項目', '内容'],
+      ['現在の局', state.round + state.kyokuNum + '局'],
+      ['本場', state.honba],
+      ['供託棒', state.pot],
+      ['親', names[state.dealerIndex]],
+      ['終局', state.gameOver ? state.overReason : 'いいえ'],
+      [],
+      ['プレイヤー', '現在の点数'],
+      ...state.players.map(p => [p.name, p.score])
+    ];
+    const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, wsSummary, '現在の状況');
+    XLSX.utils.book_append_sheet(wb, wsHistory, '点数推移');
+
+    const now = new Date();
+    const fname = `mahjong_score_${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.xlsx`;
+    XLSX.writeFile(wb, fname);
+    addLog(`Excelファイルを出力しました(${fname})`);
+  });
+
+  render();
+  renderForm();
+  renderLog();
+})();
+</script>
+</body>
+</html>
