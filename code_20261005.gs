@@ -29,6 +29,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('麻雀集計')
     .addItem('月度順位を更新', 'updateMonthlyRanking')
+    .addItem('シートの色分けを更新', 'refreshSheetColors')
     .addToUi();
 }
 
@@ -236,6 +237,17 @@ function updateMonthlyRanking_() {
 }
 
 // ---------- 見た目の調整 ----------
+// 対局IDごとに順番に使う背景色(隣の対局と必ず違う色になる)
+var GAME_COLORS = ['#e3f2e8', '#fdf3d7', '#e2ecf8', '#f8e3e3', '#ece5f6'];
+
+// メニュー「麻雀集計 > シートの色分けを更新」:今あるデータに色分けと区切り線を付け直す
+function refreshSheetColors() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var results = ss.getSheetByName(SHEET_RESULTS);
+  if (results) drawGameDividers_(results, 3);
+  var records = ss.getSheetByName(SHEET_RECORDS);
+  if (records) drawGameDividers_(records, 1);
+}
 // 対局IDが変わる位置に太線を引き、対局ごとに背景色を交互に付ける
 function drawGameDividers_(sheet, idCol) {
   var last = sheet.getLastRow();
@@ -249,7 +261,7 @@ function drawGameDividers_(sheet, idCol) {
   var band = 0;
   for (var i = 0; i < ids.length; i++) {
     if (i > 0 && String(ids[i][0]) !== String(ids[i - 1][0])) band++;
-    var color = (band % 2 === 0) ? '#ffffff' : '#eef4f0';
+    var color = GAME_COLORS[band % GAME_COLORS.length];
     var row = [];
     for (var c = 0; c < cols; c++) row.push(color);
     backgrounds.push(row);
