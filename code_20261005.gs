@@ -18,14 +18,13 @@ var RESULT_SUFFIX  = ' 半荘結果';      // 例:2026年10月 半荘結果
 var RECORD_SUFFIX  = ' 対局記録';      // 例:2026年10月 対局記録
 var MONTH_RESULT_RE = /^(\d{4}年\d{2}月) 半荘結果$/;
 var MONTH_RECORD_RE = /^(\d{4}年\d{2}月) 対局記録$/;
-var MONTH_RANKING_RE = /^\d{4}年\d{2}月 順位$/; // 前のバージョンで作った月別順位シート(削除対象)
 
 var LEGACY_RECORDS = '対局記録';       // 以前の1枚形式(自動で月別に移行)
 var LEGACY_RESULTS = '半荘結果';       // 以前の1枚形式(自動で月別に移行)
 
 var RECORD_HEADER_KEY = '対局ID';
 var WINDS = ['東', '南', '西', '北'];
-var RESULT_HEADERS = ['日付', '月度', '対局ID', 'プレイヤー', '席順',
+var RESULT_HEADERS = ['対局ID', '日付', '月度', 'プレイヤー', '席順',
                       '最終持ち点', '順位', '素点pt', '順位点', '合計pt'];
 
 // ウェブアプリURL(.../exec)を開いたときに画面を表示
@@ -41,6 +40,7 @@ function onOpen() {
     .createMenu('麻雀集計')
     .addItem('月度順位を更新', 'updateMonthlyRanking')
     .addItem('シートの色分けを更新', 'refreshSheetColors')
+    .addItem('シートにロックをかける', 'protectAllSheets')
     .addToUi();
 }
 
@@ -89,6 +89,7 @@ function getMonthSheet_(month, suffix, headers) {
     if (rec) pos = rec.getIndex() - 1;      // 同じ月の対局記録の左
   }
   sheet = ss.insertSheet(name, pos);
+  protectSheet_(sheet);
   if (headers) {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers])
       .setFontWeight('bold').setBackground('#1c4531').setFontColor('#f2eee1');
@@ -99,7 +100,12 @@ function getMonthSheet_(month, suffix, headers) {
 
 function getRankingSheet_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  return ss.getSheetByName(SHEET_MONTHLY) || ss.insertSheet(SHEET_MONTHLY, 0);
+  var sheet = ss.getSheetByName(SHEET_MONTHLY);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_MONTHLY, 0);
+    protectSheet_(sheet);
+  }
+  return sheet;
 }
 
 function listMonths_(re) {
@@ -107,6 +113,31 @@ function listMonths_(re) {
     .map(function (sh) { var m = sh.getName().match(re); return m ? m[1] : null; })
     .filter(function (m) { return m; })
     .sort();
+}
+
+// ---------- シートのロック ----------
+// 編集しようとすると「本当に編集しますか?」と警告が出る保護をかける
+// (警告のみなので、スクリプトからの書き込みは今までどおり動く)
+var PROTECT_DESCRIPTION = '雀卓精算:自動で管理しているシート';
+
+function protectSheet_(sheet) {
+  if (!sheet) return;
+  if (sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET).length > 0) return; // 設定済み
+  sheet.protect().setDescription(PROTECT_DESCRIPTION).setWarningOnly(true);
+}
+
+// 月度順位・月別の半荘結果・対局記録すべてにロックをかける
+function protectAll_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  protectSheet_(ss.getSheetByName(SHEET_MONTHLY));
+  listMonths_(MONTH_RESULT_RE).forEach(function (m) { protectSheet_(ss.getSheetByName(m + RESULT_SUFFIX)); });
+  listMonths_(MONTH_RECORD_RE).forEach(function (m) { protectSheet_(ss.getSheetByName(m + RECORD_SUFFIX)); });
+}
+
+// メニュー「麻雀集計 > シートにロックをかける」
+function protectAllSheets() {
+  protectAll_();
+  SpreadsheetApp.getActiveSpreadsheet().toast('月度順位・半荘結果・対局記録のシートにロックをかけました。', '麻雀集計', 5);
 }
 
 function renameToOld_(sheet, baseName) {
@@ -158,7 +189,7 @@ function saveGameResult(data) {
     var month = toMonth_(data.startedAt);                  // 月度(朝8時切り替え)
 
     var rows = results.map(function (r) {
-      return [datePart, month, data.gameId, r.name, WINDS[r.seat - 1],
+      return [data.gameId, datePart, month, r.name, WINDS[r.seat - 1],
               r.score, r.rank, r.soten, r.rankPoint, r.total];
     });
     writeResultRows_(getMonthSheet_(month, RESULT_SUFFIX, RESULT_HEADERS), rows, true);
@@ -175,20 +206,20 @@ function writeResultRows_(sheet, rows, replaceSameId) {
   var last = sheet.getLastRow();
   var existing = {};
   if (last > 1) {
-    var ids = sheet.getRange(2, 3, last - 1, 1).getValues();
+    var ids = sheet.getRange(2, 1, last - 1, 1).getValues(); // A列:対局ID
     for (var i = ids.length - 1; i >= 0; i--) {
       var id = String(ids[i][0]);
-      if (replaceSameId && id === String(rows[0][2])) sheet.deleteRow(i + 2);
+      if (replaceSameId && id === String(rows[0][0])) sheet.deleteRow(i + 2);
       else existing[id] = true;
     }
   }
   if (!replaceSameId) {
-    rows = rows.filter(function (r) { return !existing[String(r[2])]; });
+    rows = rows.filter(function (r) { return !existing[String(r[0])]; });
     if (rows.length === 0) return;
   }
 
   var start = sheet.getLastRow() + 1;
-  sheet.getRange(start, 2, rows.length, 1).setNumberFormat('@'); // 月度を文字のまま保持
+  sheet.getRange(start, 3, rows.length, 1).setNumberFormat('@'); // C列:月度を文字のまま保持
   sheet.getRange(start, 1, rows.length, RESULT_HEADERS.length).setValues(rows);
 
   var n = sheet.getLastRow() - 1;
@@ -196,9 +227,9 @@ function writeResultRows_(sheet, rows, replaceSameId) {
   sheet.getRange(2, 8, n, 3).setNumberFormat('+0.0;-0.0;0.0');
   if (n > 1) {
     sheet.getRange(2, 1, n, RESULT_HEADERS.length)
-      .sort([{column: 3, ascending: true}, {column: 7, ascending: true}]);
+      .sort([{column: 1, ascending: true}, {column: 7, ascending: true}]); // 対局ID → 順位
   }
-  drawGameDividers_(sheet, 3);
+  drawGameDividers_(sheet, 1);
   sheet.autoResizeColumns(1, RESULT_HEADERS.length);
 }
 
@@ -308,6 +339,7 @@ function updateMonthlyRanking_() {
   });
 
   if (row === 1) out.getRange(1, 1).setValue('まだ対局結果がありません');
+  protectAll_(); // ロックが外れているシートがあればかけ直す
   out.autoResizeColumns(1, header.length);
 }
 
@@ -323,11 +355,14 @@ function migrateLegacySheets_() {
     if (last > 1) {
       var values = legacyRes.getRange(2, 1, last - 1, RESULT_HEADERS.length).getValues();
       var byMonth = {};
+      var oldOrder = legacyRes.getRange(1, 1).getValue() !== '対局ID'; // 旧並び:日付,月度,対局ID
       values.forEach(function (v) {
-        var month = gameIdMonth_(v[2]) || String(v[1]) || toMonth_(v[0]);
-        if (!month || !v[2]) return;
-        v[1] = month;
-        (byMonth[month] = byMonth[month] || []).push(v);
+        var id = oldOrder ? v[2] : v[0];
+        var date = oldOrder ? v[0] : v[1];
+        var month = gameIdMonth_(id) || String(oldOrder ? v[1] : v[2]) || toMonth_(date);
+        if (!month || !id) return;
+        var row = [id, date, month].concat(v.slice(3));
+        (byMonth[month] = byMonth[month] || []).push(row);
       });
       Object.keys(byMonth).forEach(function (month) {
         writeResultRows_(getMonthSheet_(month, RESULT_SUFFIX, RESULT_HEADERS), byMonth[month], false);
@@ -358,11 +393,6 @@ function migrateLegacySheets_() {
     }
     renameToOld_(legacyRec, LEGACY_RECORDS);
   }
-
-  // 前のバージョンで作った「YYYY年MM月 順位」シートは「月度順位」1枚にまとめたので削除
-  ss.getSheets().forEach(function (sh) {
-    if (MONTH_RANKING_RE.test(sh.getName())) ss.deleteSheet(sh);
-  });
 }
 
 // ---------- 見た目の調整 ----------
@@ -414,7 +444,7 @@ function migrateSeatColumn_(sheet) {
 function refreshSheetColors() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   listMonths_(MONTH_RESULT_RE).forEach(function (m) {
-    drawGameDividers_(ss.getSheetByName(m + RESULT_SUFFIX), 3);
+    drawGameDividers_(ss.getSheetByName(m + RESULT_SUFFIX), 1);
   });
   listMonths_(MONTH_RECORD_RE).forEach(function (m) {
     drawGameDividers_(ss.getSheetByName(m + RECORD_SUFFIX), 1);
