@@ -125,7 +125,7 @@
   .mode-row{ display:flex; gap:8px; margin-bottom:14px; }
   .mode-btn{
     flex:1; padding:12px 0; border-radius:10px; border:1.5px solid var(--line);
-    background:var(--panel2); color:var(--text); font-size:15px; font-weight:700; cursor:pointer;
+    background:var(--panel2); color:var(--text); font-size:14px; font-weight:700; cursor:pointer;
   }
   .mode-btn.active{ border-color:var(--gold); background:var(--gold); color:#1c2b22; }
 
@@ -219,10 +219,21 @@
     <div class="mode-row">
       <button class="mode-btn" id="modeRon" data-mode="ron">ロン</button>
       <button class="mode-btn" id="modeTsumo" data-mode="tsumo">ツモ</button>
+      <button class="mode-btn" id="modeRyuukyoku" data-mode="ryuukyoku">流局</button>
     </div>
     <div id="formBody"></div>
     <button class="confirm-btn" id="confirmBtn" disabled>この上がりを反映する</button>
     <button class="clear-btn" id="clearFormBtn">入力をクリア</button>
+  </div>
+
+  <div class="panel">
+    <h2>Googleスプレッドシートに保存</h2>
+    <div class="hint" style="margin-bottom:10px;">
+      上がり・流局を確定するたびに、このスプレッドシートの「対局記録」シートへ自動で1行ずつ保存されます(URLの登録は不要です)。
+    </div>
+    <div id="sheetsStatus" class="hint" style="margin-top:8px;">待機中</div>
+    <button class="clear-btn" id="sheetsResendBtn" style="margin-top:10px; border-color:var(--gold); color:var(--gold);">🔁 未保存の記録を保存</button>
+    <button class="clear-btn" id="sheetsForceResendBtn" style="margin-top:8px; font-size:11px;">⚠ 全件を強制的に再保存(重複行に注意)</button>
   </div>
 
   <div class="panel">
@@ -232,14 +243,8 @@
   </div>
 
   <div class="panel">
-    <h2>データの保存・読み込み</h2>
-    <div class="hint" style="margin-bottom:10px;">「保存」でスマホ・PCにファイルがダウンロードされます。好きなフォルダに移動して保管し、「読み込み」であとから復元できます。</div>
-    <button class="confirm-btn" id="saveBtn" style="margin-top:0;">💾 現在のデータを保存(ダウンロード)</button>
-    <label class="clear-btn" id="loadLabel" style="display:block; text-align:center; margin-top:8px; cursor:pointer;">
-      📂 保存したデータを読み込む
-      <input type="file" id="loadInput" accept="application/json" style="display:none;">
-    </label>
-    <div class="hint" style="margin:14px 0 10px;">Excelで開いて集計・グラフ化したい場合はこちら(このアプリへの読み込みには使えません)。</div>
+    <h2>Excel出力</h2>
+    <div class="hint" style="margin-bottom:10px;">Excelで開いて集計・グラフ化したい場合はこちら(このアプリへの読み込みには使えません)。</div>
     <button class="clear-btn" id="excelBtn" style="border-color:var(--gold); color:var(--gold);">📊 Excel形式(.xlsx)でダウンロード</button>
   </div>
 
@@ -293,14 +298,17 @@
       gameOver: false,
       overReason: '',
       logs: [],
-      scoreHistory: []
+      scoreHistory: [],
+      handRecords: [],
+      scoreAtHandStart: [startScore, startScore, startScore, startScore],
+      potAtHandStart: 0
     };
   }
   state = freshState(25000);
   history = [];
   const MAX_HISTORY = 25;
 
-  function freshForm(){ return {mode:null, winners:[], han:{}, loser:null, potCollector:null}; }
+  function freshForm(){ return {mode:null, winners:[], han:{}, loser:null, potCollector:null, tenpai:[]}; }
   formState = freshForm();
 
   const boardEl = document.getElementById('board');
@@ -321,6 +329,23 @@
       state.gameOver = true;
       state.overReason = `${negPlayer.name} の持ち点がマイナスになったため終局です。`;
     }
+  }
+
+  // 1局分の結果を確定してExcel出力用の記録に積む
+  function pushHandRecord(fields){
+    const scoresAfter = state.players.map(p=>p.score);
+    const zouzen = scoresAfter.map((s,i)=> s - state.scoreAtHandStart[i]);
+    const row = Object.assign({
+      no: state.handRecords.length + 1,
+      zouzen: zouzen,
+      ruikei: scoresAfter.slice(),
+      gameOverText: state.gameOver ? (state.overReason || '終局') : '',
+      sent: false
+    }, fields);
+    state.handRecords.push(row);
+    state.scoreAtHandStart = scoresAfter;
+    state.potAtHandStart = state.pot;
+    sendRecordToSheet(row);
   }
 
   function addLog(text){
@@ -434,9 +459,9 @@
   }
 
   // ---------------- kyoku / honba controls ----------------
-  document.getElementById('kyokuPlus').addEventListener('click', ()=>{
-    if(state.gameOver) return;
-    pushHistory();
+  // 局を1つ進める(親交代)。半荘の南4局を超えたら終局にする。
+  // resetHonba=true: 本場を0に戻す(子の和了など) / false: 本場を維持する(流局の親ノーテンなど)
+  function advanceKyoku(resetHonba){
     state.kyokuNum++;
     if(state.kyokuNum > 4){
       if(state.round === '東'){
@@ -445,15 +470,20 @@
         state.kyokuNum = 4;
         state.gameOver = true;
         state.overReason = '半荘終了(南4局が終わりました)。';
-        render();
-        addLog('半荘終了');
-        return;
+        return true;
       }
     }
     state.dealerIndex = (state.dealerIndex + 1) % 4;
-    state.honba = 0;
+    if(resetHonba) state.honba = 0;
+    return false;
+  }
+
+  document.getElementById('kyokuPlus').addEventListener('click', ()=>{
+    if(state.gameOver) return;
+    pushHistory();
+    const ended = advanceKyoku(true);
     render();
-    addLog('次の局へ(親交代)');
+    addLog(ended ? '半荘終了' : '次の局へ(親交代)');
   });
   document.getElementById('kyokuMinus').addEventListener('click', ()=>{
     if(state.gameOver) return;
@@ -487,6 +517,9 @@
     history = [];
     state = freshState(start);
     formState = freshForm();
+    document.getElementById('modeRon').classList.remove('active');
+    document.getElementById('modeTsumo').classList.remove('active');
+    document.getElementById('modeRyuukyoku').classList.remove('active');
     render();
     renderForm();
     renderLog();
@@ -511,14 +544,17 @@
     formState.mode = mode;
     document.getElementById('modeRon').classList.toggle('active', mode==='ron');
     document.getElementById('modeTsumo').classList.toggle('active', mode==='tsumo');
+    document.getElementById('modeRyuukyoku').classList.toggle('active', mode==='ryuukyoku');
     renderForm();
   }
   document.getElementById('modeRon').addEventListener('click', ()=>setMode('ron'));
   document.getElementById('modeTsumo').addEventListener('click', ()=>setMode('tsumo'));
+  document.getElementById('modeRyuukyoku').addEventListener('click', ()=>setMode('ryuukyoku'));
   document.getElementById('clearFormBtn').addEventListener('click', ()=>{
     formState = freshForm();
     document.getElementById('modeRon').classList.remove('active');
     document.getElementById('modeTsumo').classList.remove('active');
+    document.getElementById('modeRyuukyoku').classList.remove('active');
     renderForm();
   });
 
@@ -540,13 +576,45 @@
     formState.loser = idx;
     renderForm();
   }
+  function toggleTenpai(idx){
+    const pos = formState.tenpai.indexOf(idx);
+    if(pos === -1) formState.tenpai.push(idx);
+    else formState.tenpai.splice(pos,1);
+    renderForm();
+  }
 
   function renderForm(){
     if(!formState.mode){
-      formBodyEl.innerHTML = '<div class="field-label">まず「ロン」か「ツモ」を選んでください</div>';
+      formBodyEl.innerHTML = '<div class="field-label">まず「ロン」「ツモ」「流局」のいずれかを選んでください</div>';
       confirmBtn.disabled = true;
       return;
     }
+
+    if(formState.mode === 'ryuukyoku'){
+      let html = '<div class="field-label">聴牌している人を選択してください(未選択のままでよければ全員ノーテン)</div>';
+      html += '<div class="chip-row">';
+      state.players.forEach((p,i)=>{
+        const selected = formState.tenpai.includes(i);
+        html += `<button class="chip ${selected?'selected':''}" data-action="tenpai" data-idx="${i}">${p.name}${i===state.dealerIndex?'(親)':''}</button>`;
+      });
+      html += '</div>';
+      const n = formState.tenpai.length;
+      if(n === 0){
+        html += '<div class="field-label">全員ノーテンのため点数移動なし。親がノーテンなので次局へ進みます。</div>';
+      } else if(n === 4){
+        html += '<div class="field-label">全員聴牌のため点数移動なし。親は聴牌のためこの局を継続します。</div>';
+      } else {
+        const dealerTenpai = formState.tenpai.includes(state.dealerIndex);
+        html += `<div class="field-label">ノーテンの人から聴牌の人へ点数が移動します(${dealerTenpai ? '親は聴牌のためこの局を継続' : '親はノーテンのため次局へ進みます'})</div>`;
+      }
+      formBodyEl.innerHTML = html;
+      formBodyEl.querySelectorAll('[data-action="tenpai"]').forEach(el=>{
+        el.addEventListener('click', ()=> toggleTenpai(parseInt(el.dataset.idx)));
+      });
+      confirmBtn.disabled = state.gameOver;
+      return;
+    }
+
     let html = '<div class="field-label">和了した人' + (formState.mode==='ron' ? '(ダブロンの場合は複数選択可)' : '') + '</div>';
     html += '<div class="chip-row">';
     state.players.forEach((p,i)=>{
@@ -609,6 +677,11 @@
     pushHistory();
 
     const honba = state.honba;
+    const kyokuLabel = state.round + state.kyokuNum + '局';
+    const dealerName = state.players[state.dealerIndex].name;
+    const riichiFlags = state.players.map(p=>p.riichi);
+    const riichiCountThisHand = riichiFlags.filter(Boolean).length;
+    const potStart = state.potAtHandStart;
 
     if(formState.mode === 'ron'){
       const loserIdx = formState.loser;
@@ -621,7 +694,7 @@
         const bucket = bucketKey(han);
         const isDealerWinner = wi === state.dealerIndex;
         const table = isDealerWinner ? RON_PARENT : RON_CHILD;
-        let amt = table[bucket] + honba*300;
+        let amt = table[bucket];
         winner.score += amt;
         totalFromLoser += amt;
         parts.push(`${winner.name}(${han}飜)+${amt.toLocaleString()}`);
@@ -629,14 +702,47 @@
       loser.score -= totalFromLoser;
 
       let potMsg = '';
+      let potCollectedAmt = 0;
+      let potCollectorName = '';
       if(state.pot > 0){
         const collector = state.players[formState.potCollector ?? formState.winners[0]];
+        potCollectedAmt = state.pot;
+        potCollectorName = collector.name;
         collector.score += state.pot;
         potMsg = `／供託${state.pot}点は${collector.name}が獲得`;
         state.pot = 0;
       }
       addLog(`ロン: ${loser.name}より ${parts.join('、')}(本場${honba})${potMsg}`);
-    } else {
+
+      const dealerWon = formState.winners.includes(state.dealerIndex);
+      state.players.forEach(p=>p.riichi=false);
+      checkGameOver();
+      if(!state.gameOver){
+        if(dealerWon){
+          state.honba++;
+          addLog(`親の和了のため${state.round}${state.kyokuNum}局を継続(本場${state.honba})`);
+        } else {
+          const ended = advanceKyoku(true);
+          addLog(ended ? '半荘終了' : `子の和了のため次局(${state.round}${state.kyokuNum}局)へ`);
+        }
+      }
+
+      pushHandRecord({
+        kyoku: kyokuLabel,
+        dealer: dealerName,
+        agariType: 'ロン',
+        houjuu: loser.name,
+        winner1: state.players[formState.winners[0]].name,
+        han1: formState.han[formState.winners[0]] || 1,
+        winner2: formState.winners[1] !== undefined ? state.players[formState.winners[1]].name : '',
+        han2: formState.winners[1] !== undefined ? (formState.han[formState.winners[1]] || 1) : '',
+        riichiFlags: riichiFlags,
+        riichiCountThisHand: riichiCountThisHand,
+        potStart: potStart,
+        potEnd: state.pot,
+        potCollected: potCollectedAmt
+      });
+    } else if(formState.mode === 'tsumo'){
       const wi = formState.winners[0];
       const winner = state.players[wi];
       const han = formState.han[wi] || 1;
@@ -646,77 +752,185 @@
       state.players.forEach((p,i)=>{
         if(i === wi) return;
         let base = isDealerWinner ? TSUMO_FROM_PARENT[bucket] : (i === state.dealerIndex ? TSUMO_FROM_PARENT[bucket] : TSUMO_FROM_CHILD[bucket]);
-        const amt = base + honba*100;
+        const amt = base;
         p.score -= amt;
         totalGain += amt;
       });
       winner.score += totalGain;
 
       let potMsg = '';
+      let potCollectedAmt = 0;
       if(state.pot > 0){
+        potCollectedAmt = state.pot;
         winner.score += state.pot;
         potMsg = `／供託${state.pot}点を獲得`;
         state.pot = 0;
       }
       addLog(`ツモ: ${winner.name}(${han}飜) 合計+${totalGain.toLocaleString()}点(本場${honba})${potMsg}`);
-    }
 
-    state.players.forEach(p=>p.riichi=false);
-    checkGameOver();
+      state.players.forEach(p=>p.riichi=false);
+      checkGameOver();
+      if(!state.gameOver){
+        if(isDealerWinner){
+          state.honba++;
+          addLog(`親の和了のため${state.round}${state.kyokuNum}局を継続(本場${state.honba})`);
+        } else {
+          const ended = advanceKyoku(true);
+          addLog(ended ? '半荘終了' : `子の和了のため次局(${state.round}${state.kyokuNum}局)へ`);
+        }
+      }
+
+      pushHandRecord({
+        kyoku: kyokuLabel,
+        dealer: dealerName,
+        agariType: 'ツモ',
+        houjuu: '',
+        winner1: winner.name,
+        han1: han,
+        winner2: '',
+        han2: '',
+        riichiFlags: riichiFlags,
+        riichiCountThisHand: riichiCountThisHand,
+        potStart: potStart,
+        potEnd: state.pot,
+        potCollected: potCollectedAmt
+      });
+    } else if(formState.mode === 'ryuukyoku'){
+      const tenpaiIdx = formState.tenpai.slice();
+      const notenIdx = state.players.map((_,i)=>i).filter(i=>!tenpaiIdx.includes(i));
+
+      if(tenpaiIdx.length === 0 || tenpaiIdx.length === 4){
+        addLog(`流局(${tenpaiIdx.length===4?'全員聴牌':'全員ノーテン'}、点数移動なし・本場${honba})`);
+      } else {
+        const totalPot = 3000;
+        const perTenpai = totalPot / tenpaiIdx.length;
+        const perNoten = totalPot / notenIdx.length;
+        tenpaiIdx.forEach(i=>{ state.players[i].score += perTenpai; });
+        notenIdx.forEach(i=>{ state.players[i].score -= perNoten; });
+        const tenpaiNames = tenpaiIdx.map(i=>state.players[i].name).join('・');
+        const notenNames = notenIdx.map(i=>state.players[i].name).join('・');
+        addLog(`流局: 聴牌(${tenpaiNames}) 各+${perTenpai.toLocaleString()}点／ノーテン(${notenNames}) 各−${perNoten.toLocaleString()}点(本場${honba})`);
+      }
+
+      const dealerTenpai = tenpaiIdx.includes(state.dealerIndex);
+      state.honba++;
+      checkGameOver();
+      if(!state.gameOver){
+        if(dealerTenpai){
+          addLog(`親聴牌のため${state.round}${state.kyokuNum}局を継続(本場${state.honba})`);
+        } else {
+          const ended = advanceKyoku(false);
+          addLog(ended ? '半荘終了' : `親ノーテンのため次局(${state.round}${state.kyokuNum}局)へ(本場${state.honba})`);
+        }
+      }
+
+      pushHandRecord({
+        kyoku: kyokuLabel,
+        dealer: dealerName,
+        agariType: '流局',
+        houjuu: '',
+        winner1: '',
+        han1: '',
+        winner2: '',
+        han2: '',
+        riichiFlags: riichiFlags,
+        riichiCountThisHand: riichiCountThisHand,
+        potStart: potStart,
+        potEnd: state.pot,
+        potCollected: 0
+      });
+    }
 
     formState = freshForm();
     document.getElementById('modeRon').classList.remove('active');
     document.getElementById('modeTsumo').classList.remove('active');
+    document.getElementById('modeRyuukyoku').classList.remove('active');
     render();
     renderForm();
   });
 
-  // ---------------- save / load ----------------
+  // ---------------- Google スプレッドシート連携 ----------------
   function pad(n){ return String(n).padStart(2,'0'); }
 
-  document.getElementById('saveBtn').addEventListener('click', ()=>{
-    const payload = { savedAt: new Date().toISOString(), state: state };
-    const json = JSON.stringify(payload, null, 2);
-    const blob = new Blob([json], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
-    const now = new Date();
-    const fname = `mahjong_score_${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.json`;
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fname;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    addLog(`データを保存しました(${fname})`);
+  const sheetsStatusEl = document.getElementById('sheetsStatus');
+  const hasGas = (typeof google !== 'undefined' && google.script && google.script.run);
+  if(!hasGas){
+    sheetsStatusEl.textContent = '⚠ この画面はApps Scriptのウェブアプリ(.../exec)から開いた時だけスプレッドシートに保存できます。';
+  }
+
+  function recordToRow(r, names){
+    return [
+      r.no, r.kyoku, r.dealer, r.agariType, r.houjuu, r.winner1, r.han1, r.winner2, r.han2,
+      r.riichiFlags[0] ? '○' : '', r.riichiFlags[1] ? '○' : '', r.riichiFlags[2] ? '○' : '', r.riichiFlags[3] ? '○' : '',
+      r.potStart, r.riichiCountThisHand, r.potEnd, r.potCollected,
+      r.zouzen[0], r.zouzen[1], r.zouzen[2], r.zouzen[3],
+      r.ruikei[0], r.ruikei[1], r.ruikei[2], r.ruikei[3],
+      r.gameOverText
+    ];
+  }
+  function recordHeaderRow(names){
+    return [
+      'No','局','親','上がり方','放銃した人','上がった人1','飜数1','上がった人2','飜数2',
+      `リーチ:${names[0]}`, `リーチ:${names[1]}`, `リーチ:${names[2]}`, `リーチ:${names[3]}`,
+      '供託繰越(開始)','今回リーチ本数','供託繰越(終了)','和了時獲得供託点',
+      `増減:${names[0]}`, `増減:${names[1]}`, `増減:${names[2]}`, `増減:${names[3]}`,
+      `累計:${names[0]}`, `累計:${names[1]}`, `累計:${names[2]}`, `累計:${names[3]}`,
+      '終局判定'
+    ];
+  }
+
+  // google.script.run で Apps Script 側の saveRecord() を直接呼び出す(成功/失敗が判定できる)
+  function sendRecordToSheet(record, force){
+    if(!hasGas) return Promise.resolve();
+    if(record.sent && !force) return Promise.resolve();
+    const names = state.players.map(p=>p.name);
+    const payload = { headers: recordHeaderRow(names), row: recordToRow(record, names) };
+    sheetsStatusEl.textContent = `保存中…(No.${record.no})`;
+    return new Promise(resolve=>{
+      google.script.run
+        .withSuccessHandler(()=>{
+          record.sent = true;
+          sheetsStatusEl.textContent = `✅ 保存しました(No.${record.no})`;
+          resolve();
+        })
+        .withFailureHandler(err=>{
+          record.sent = false;
+          sheetsStatusEl.textContent = `⚠ 保存できませんでした(No.${record.no}): ${err && err.message ? err.message : err}。「未保存の記録を保存」で再試行できます。`;
+          resolve();
+        })
+        .saveRecord(payload);
+    });
+  }
+
+  async function sendManySequentially(list, force){
+    for(const r of list){ await sendRecordToSheet(r, force); }
+  }
+
+  document.getElementById('sheetsResendBtn').addEventListener('click', ()=>{
+    if(!hasGas){ return; }
+    const unsent = (state.handRecords || []).filter(r => !r.sent);
+    if(unsent.length === 0){
+      sheetsStatusEl.textContent = '未保存の記録はありません(すべて保存済みです)。';
+      return;
+    }
+    sendManySequentially(unsent, false).then(()=>{
+      const left = state.handRecords.filter(r=>!r.sent).length;
+      sheetsStatusEl.textContent = left ? `⚠ ${left}件が保存できませんでした。もう一度お試しください。` : `✅ 未保存だった${unsent.length}件を保存しました。`;
+    });
   });
 
-  document.getElementById('loadInput').addEventListener('change', (e)=>{
-    const file = e.target.files[0];
-    if(!file) return;
-    const reader = new FileReader();
-    reader.onload = ()=>{
-      try{
-        const payload = JSON.parse(reader.result);
-        const loaded = payload.state || payload;
-        if(!loaded.players || loaded.players.length !== 4) throw new Error('invalid');
-        const fresh = freshState(loaded.startScore || 25000);
-        state = Object.assign(fresh, loaded);
-        if(!Array.isArray(state.logs)) state.logs = [];
-        if(!Array.isArray(state.scoreHistory)) state.scoreHistory = [];
-        history = [];
-        formState = freshForm();
-        render();
-        renderForm();
-        renderLog();
-        addLog(`データを読み込みました(${file.name})`);
-      }catch(err){
-        alert('ファイルを読み込めませんでした。保存したデータのファイルか確認してください。');
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
+  document.getElementById('sheetsForceResendBtn').addEventListener('click', ()=>{
+    if(!hasGas){ return; }
+    if(!state.handRecords || state.handRecords.length === 0){
+      sheetsStatusEl.textContent = '保存できる記録がまだありません。';
+      return;
+    }
+    if(!confirm('全件を強制的に再保存します。スプレッドシート側に重複行が増える可能性がありますが、よろしいですか?')) return;
+    sendManySequentially(state.handRecords, true).then(()=>{
+      sheetsStatusEl.textContent = `全${state.handRecords.length}件の再保存処理が完了しました。`;
+    });
   });
+
 
   document.getElementById('excelBtn').addEventListener('click', ()=>{
     if(typeof XLSX === 'undefined'){
@@ -724,6 +938,11 @@
       return;
     }
     const names = state.players.map(p=>p.name);
+
+    const recordHeader = recordHeaderRow(names);
+    const recordRows = (state.handRecords || []).map(r => recordToRow(r, names));
+    const wsRecords = XLSX.utils.aoa_to_sheet([recordHeader, ...recordRows]);
+
     const historyRows = [
       ['局', '本場', '内容', ...names],
       ...(state.scoreHistory || []).map(r => [r.kyoku, r.honba, r.event, ...r.scores])
@@ -745,7 +964,8 @@
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, wsSummary, '現在の状況');
-    XLSX.utils.book_append_sheet(wb, wsHistory, '点数推移');
+    XLSX.utils.book_append_sheet(wb, wsRecords, '対局記録');
+    XLSX.utils.book_append_sheet(wb, wsHistory, '操作履歴');
 
     const now = new Date();
     const fname = `mahjong_score_${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.xlsx`;
