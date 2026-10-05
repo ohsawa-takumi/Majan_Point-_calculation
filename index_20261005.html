@@ -232,6 +232,11 @@
       上がり・流局を確定するたびに、このスプレッドシートの「対局記録」シートへ自動で1行ずつ保存されます(URLの登録は不要です)。
     </div>
     <div id="sheetsStatus" class="hint" style="margin-top:8px;">待機中</div>
+    <button class="confirm-btn" id="endGameBtn">🏁 対局を終了して結果を保存</button>
+    <div class="hint" style="margin-top:6px; text-align:left; line-height:1.6;">
+      半荘が終わったら押してください。Mリーグルール(30000点返し・オカ+20・ウマ10-30)で計算し、「半荘結果」「月度順位」シートに反映します。月度順位はプレイヤー名で集計するので、毎回同じ名前を使ってください。
+    </div>
+    <div id="gameResultBox" class="hint" style="margin-top:8px; text-align:left; line-height:1.8;"></div>
     <button class="clear-btn" id="sheetsResendBtn" style="margin-top:10px; border-color:var(--gold); color:var(--gold);">🔁 未保存の記録を保存</button>
     <button class="clear-btn" id="sheetsForceResendBtn" style="margin-top:8px; font-size:11px;">⚠ 全件を強制的に再保存(重複行に注意)</button>
   </div>
@@ -281,13 +286,26 @@
 
   let state, history, formState;
 
-  function freshState(startScore){
+  function pad2(n){ return String(n).padStart(2,'0'); }
+  function nowParts(){
+    const d = new Date();
     return {
+      id: `G${d.getFullYear()}${pad2(d.getMonth()+1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`,
+      text: `${d.getFullYear()}/${pad2(d.getMonth()+1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+    };
+  }
+  function freshState(startScore, names){
+    names = names || ['プレイヤー1','プレイヤー2','プレイヤー3','プレイヤー4'];
+    const t = nowParts();
+    return {
+      gameId: t.id,
+      startedAt: t.text,
+      resultSaved: false,
       players: [
-        {name:'プレイヤー1', score:startScore, riichi:false},
-        {name:'プレイヤー2', score:startScore, riichi:false},
-        {name:'プレイヤー3', score:startScore, riichi:false},
-        {name:'プレイヤー4', score:startScore, riichi:false},
+        {name:names[0], score:startScore, riichi:false},
+        {name:names[1], score:startScore, riichi:false},
+        {name:names[2], score:startScore, riichi:false},
+        {name:names[3], score:startScore, riichi:false},
       ],
       dealerIndex: 0,
       round: '東',
@@ -513,9 +531,14 @@
   });
 
   function doReset(){
+    if(state.handRecords.length > 0 && !state.resultSaved){
+      if(!confirm('この対局の結果をまだ保存していません(月度順位に反映されません)。保存せずに新規対局を始めますか?')) return;
+    }
     const start = parseInt(document.getElementById('startScoreInput').value) || 25000;
+    const keepNames = state.players.map(p=>p.name);
     history = [];
-    state = freshState(start);
+    state = freshState(start, keepNames);
+    document.getElementById('gameResultBox').innerHTML = '';
     formState = freshForm();
     document.getElementById('modeRon').classList.remove('active');
     document.getElementById('modeTsumo').classList.remove('active');
@@ -860,6 +883,7 @@
 
   function recordToRow(r, names){
     return [
+      state.gameId, state.startedAt,
       r.no, r.kyoku, r.dealer, r.agariType, r.houjuu, r.winner1, r.han1, r.winner2, r.han2,
       r.riichiFlags[0] ? '○' : '', r.riichiFlags[1] ? '○' : '', r.riichiFlags[2] ? '○' : '', r.riichiFlags[3] ? '○' : '',
       r.potStart, r.riichiCountThisHand, r.potEnd, r.potCollected,
@@ -870,6 +894,7 @@
   }
   function recordHeaderRow(names){
     return [
+      '対局ID','開始日時',
       'No','局','親','上がり方','放銃した人','上がった人1','飜数1','上がった人2','飜数2',
       `リーチ:${names[0]}`, `リーチ:${names[1]}`, `リーチ:${names[2]}`, `リーチ:${names[3]}`,
       '供託繰越(開始)','今回リーチ本数','供託繰越(終了)','和了時獲得供託点',
@@ -931,6 +956,57 @@
     });
   });
 
+
+  // ---------------- 対局終了 → 半荘結果を保存 ----------------
+  function chiichaIndex(){
+    // 局の進行から起家(東1局の親)を逆算する
+    const kyokuIdx = (state.round === '南' ? 4 : 0) + state.kyokuNum - 1;
+    return ((state.dealerIndex - kyokuIdx) % 4 + 4) % 4;
+  }
+  function esc(t){ return String(t).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+  document.getElementById('endGameBtn').addEventListener('click', ()=>{
+    if(!hasGas){
+      sheetsStatusEl.textContent = '⚠ Apps Scriptのウェブアプリから開いた時だけ保存できます。';
+      return;
+    }
+    const msg = state.resultSaved
+      ? 'この対局の結果は保存済みです。現在の点数で上書き保存しますか?'
+      : `現在の点数でこの対局を終了し、結果を保存しますか?` + (state.pot > 0 ? `\n(残っている供託 ${state.pot}点 はトップに加算されます)` : '');
+    if(!confirm(msg)) return;
+    const btn = document.getElementById('endGameBtn');
+    btn.disabled = true;
+    sheetsStatusEl.textContent = '対局結果を保存中…';
+    const payload = {
+      gameId: state.gameId,
+      startedAt: state.startedAt,
+      names: state.players.map(p=>p.name),
+      scores: state.players.map(p=>p.score),
+      chiicha: chiichaIndex(),
+      pot: state.pot
+    };
+    google.script.run
+      .withSuccessHandler(results=>{
+        btn.disabled = false;
+        pushHistory();
+        state.resultSaved = true;
+        if(!state.gameOver){
+          state.gameOver = true;
+          state.overReason = '対局終了(結果を保存しました)';
+        }
+        render();
+        addLog('対局結果を保存しました');
+        sheetsStatusEl.textContent = '✅ 対局結果を保存し、月度順位を更新しました。';
+        document.getElementById('gameResultBox').innerHTML = results.map(r =>
+          `${r.rank}位 ${esc(r.name)}　${r.score.toLocaleString()}点　<b>${r.total > 0 ? '+' : ''}${r.total.toFixed(1)}</b>`
+        ).join('<br>');
+      })
+      .withFailureHandler(err=>{
+        btn.disabled = false;
+        sheetsStatusEl.textContent = `⚠ 対局結果を保存できませんでした: ${err && err.message ? err.message : err}`;
+      })
+      .saveGameResult(payload);
+  });
 
   document.getElementById('excelBtn').addEventListener('click', ()=>{
     if(typeof XLSX === 'undefined'){
