@@ -175,8 +175,16 @@ function saveRecord(data) {
     }
     var sheet = getMonthSheet_(month, RECORD_SUFFIX, data.headers);
     writeRecordRows_(sheet, rows);
+
+    // 終局した局なら、続けて半荘結果を保存し月度順位を更新する
+    // (月度順位の更新は、画面から refreshRanking を続けて呼んで行う=保存完了を早く返すため)
+    var results = null, resMonth = '';
+    if (data.gameEnd) {
+      results = saveResult_(data.gameEnd);
+      resMonth = toMonth_(data.gameEnd.startedAt);
+    }
     SpreadsheetApp.flush(); // 書き込みをすぐに確定させる
-    return 'ok';
+    return results ? {status: 'ok', results: results, month: resMonth} : 'ok';
   } finally {
     lock.releaseLock();
   }
@@ -184,16 +192,60 @@ function saveRecord(data) {
 
 function writeRecordRows_(sheet, rows) {
   if (rows.length === 0) return;
-  var start = sheet.getLastRow() + 1;
+  ensureFormats_(sheet, 'record');
+  var last = sheet.getLastRow();
   var cols = rows[0].length;
-  sheet.getRange(start, 1, rows.length, 2).setNumberFormat('@'); // 対局ID・開始日時を文字のまま保持
+  var newId = String(rows[0][0]), newNo = Number(rows[0][2]);
+  var prev = last > 1 ? sheet.getRange(last, 1, 1, 3).getValues()[0] : null;
+  var start = last + 1;
   sheet.getRange(start, 1, rows.length, cols).setValues(rows);
-  // 対局ID → No の順に並べ替え
-  if (sheet.getLastRow() > 2) {
-    sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn())
-      .sort([{column: 1, ascending: true}, {column: 3, ascending: true}]);
+
+  // 速い経路:今までの最後の行より後ろに並ぶ記録(通常はこれ)→ 追加した行だけ色と線を付ける
+  var inOrder = !prev || String(prev[0]) < newId ||
+                (String(prev[0]) === newId && Number(prev[2]) <= newNo);
+  if (inOrder && rows.every(function (r) { return String(r[0]) === newId; })) {
+    paintAppended_(sheet, start, rows.length, prev && String(prev[0]) === newId);
+    return;
   }
+  // それ以外(再送で順番が前後した等)は全体を並べ替えて塗り直す
+  sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn())
+    .sort([{column: 1, ascending: true}, {column: 3, ascending: true}]);
   drawGameDividers_(sheet, 1);
+}
+
+// 最後に追加した行だけ色分け・区切り線を付ける
+//   sameGame=true:直前の行と同じ対局 → 同じ色で続け、区切り線を下へ移す
+function paintAppended_(sheet, start, n, sameGame) {
+  var cols = sheet.getLastColumn();
+  var color;
+  if (start > 2) {
+    var prevRow = sheet.getRange(start - 1, 1, 1, cols);
+    var prevColor = sheet.getRange(start - 1, 1).getBackground();
+    var k = GAME_COLORS.indexOf(prevColor);
+    color = sameGame ? (k >= 0 ? prevColor : GAME_COLORS[0])
+                     : GAME_COLORS[(k + 1) % GAME_COLORS.length];
+    if (sameGame) prevRow.setBorder(null, null, false, null, null, null);
+  } else {
+    color = GAME_COLORS[0];
+  }
+  sheet.getRange(start, 1, n, cols).setBackground(color);
+  sheet.getRange(start + n - 1, 1, 1, cols)
+    .setBorder(null, null, true, null, null, null, '#1c4531', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+}
+
+// 列の表示形式はシートごとに1回だけ設定する(毎回設定すると遅いため)
+function ensureFormats_(sheet, kind) {
+  var props = PropertiesService.getDocumentProperties();
+  var key = 'fmt:' + sheet.getSheetId();
+  if (props.getProperty(key)) return;
+  if (kind === 'record') {
+    sheet.getRange('A2:B').setNumberFormat('@');           // 対局ID・開始日時
+  } else {
+    sheet.getRange('C2:C').setNumberFormat('@');           // 月度
+    sheet.getRange('F2:F').setNumberFormat('#,##0');       // 最終持ち点
+    sheet.getRange('H2:J').setNumberFormat('+0.0;-0.0;0.0'); // 素点pt・順位点・合計pt
+  }
+  props.setProperty(key, '1');
 }
 
 // ---------- 対局終了時の結果保存(画面の「対局を終了して結果を保存」) ----------
@@ -203,9 +255,9 @@ function saveGameResult(data) {
   try {
     migrateLegacySheets_();
     var results = saveResult_(data);
-    updateMonthlyRanking_();
     SpreadsheetApp.flush(); // 書き込みをすぐに確定させる
-    return results;
+    // 月度順位は画面から refreshRanking を続けて呼んで更新する(保存完了を早く返すため)
+    return {results: results, month: toMonth_(data.startedAt)};
   } finally {
     lock.releaseLock();
   }
@@ -230,32 +282,43 @@ function saveResult_(data) {
 // 半荘結果シートに行を書き込む(replaceSameId=true なら同じ対局IDを置き換え、false なら重複を飛ばす)
 function writeResultRows_(sheet, rows, replaceSameId) {
   if (rows.length === 0) return;
+  ensureFormats_(sheet, 'result');
+  var cols = RESULT_HEADERS.length;
   var last = sheet.getLastRow();
-  var existing = {};
-  if (last > 1) {
-    var ids = sheet.getRange(2, 1, last - 1, 1).getValues(); // A列:対局ID
-    for (var i = ids.length - 1; i >= 0; i--) {
-      var id = String(ids[i][0]);
-      if (replaceSameId && id === String(rows[0][0])) sheet.deleteRow(i + 2);
-      else existing[id] = true;
+  var ids = last > 1 ? sheet.getRange(2, 1, last - 1, 1).getValues().map(function (r) { return String(r[0]); }) : [];
+  var newId = String(rows[0][0]);
+  var single = rows.every(function (r) { return String(r[0]) === newId; });
+
+  if (replaceSameId && single) {
+    var hit = [];
+    ids.forEach(function (id, k) { if (id === newId) hit.push(k); });
+    // 同じ対局の上書き:同じ行数が並んでいれば、その場で書き換えるだけ
+    if (hit.length === rows.length && hit[hit.length - 1] - hit[0] === hit.length - 1) {
+      sheet.getRange(hit[0] + 2, 1, rows.length, cols).setValues(rows);
+      return;
     }
+    for (var d = hit.length - 1; d >= 0; d--) sheet.deleteRow(hit[d] + 2);
+    if (hit.length) { last = sheet.getLastRow(); ids = ids.filter(function (id) { return id !== newId; }); }
   }
   if (!replaceSameId) {
-    rows = rows.filter(function (r) { return !existing[String(r[0])]; });
+    var exist = {};
+    ids.forEach(function (id) { exist[id] = true; });
+    rows = rows.filter(function (r) { return !exist[String(r[0])]; });
     if (rows.length === 0) return;
   }
 
-  var start = sheet.getLastRow() + 1;
-  sheet.getRange(start, 3, rows.length, 1).setNumberFormat('@'); // C列:月度を文字のまま保持
-  sheet.getRange(start, 1, rows.length, RESULT_HEADERS.length).setValues(rows);
+  var start = last + 1;
+  sheet.getRange(start, 1, rows.length, cols).setValues(rows);
 
-  var n = sheet.getLastRow() - 1;
-  sheet.getRange(2, 6, n, 1).setNumberFormat('#,##0');
-  sheet.getRange(2, 8, n, 3).setNumberFormat('+0.0;-0.0;0.0');
-  if (n > 1) {
-    sheet.getRange(2, 1, n, RESULT_HEADERS.length)
-      .sort([{column: 1, ascending: true}, {column: 7, ascending: true}]); // 対局ID → 順位
+  // 速い経路:1対局分で、既存のどの対局よりも新しい(通常はこれ)→ 追加行だけ塗る
+  var lastId = ids.length ? ids[ids.length - 1] : '';
+  if (single && newId > lastId) {
+    paintAppended_(sheet, start, rows.length, false);
+    return;
   }
+  // それ以外(過去分の取り込み等)は全体を並べ替えて塗り直す
+  sheet.getRange(2, 1, sheet.getLastRow() - 1, cols)
+    .sort([{column: 1, ascending: true}, {column: 7, ascending: true}]); // 対局ID → 順位
   drawGameDividers_(sheet, 1);
 }
 
@@ -306,69 +369,110 @@ function updateMonthlyRanking() {
   }
 }
 
-// 「月度順位」シートを作り直す。古い月から順に、月ごとのブロックを下へ並べる
+var RANKING_HEADER = ['順位', 'プレイヤー', '合計pt', '半荘数', '平均順位',
+                      '1位', '2位', '3位', '4位', 'トップ率', 'ラス回避率', '最高持ち点'];
+var MONTH_TITLE_RE = /^\d{4}年\d{2}月度$/;
+
+// 「月度順位」シートを全部作り直す。古い月から順に、月ごとのブロックを下へ並べる
 function updateMonthlyRanking_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var out = getRankingSheet_();
   out.clear();
-
-  var months = listMonths_(MONTH_RESULT_RE);
-  var header = ['順位', 'プレイヤー', '合計pt', '半荘数', '平均順位',
-                '1位', '2位', '3位', '4位', 'トップ率', 'ラス回避率', '最高持ち点'];
   var row = 1;
-
-  months.forEach(function (month) {
-    var src = ss.getSheetByName(month + RESULT_SUFFIX);
-    if (!src || src.getLastRow() < 2) return;
-
-    var values = src.getRange(2, 1, src.getLastRow() - 1, RESULT_HEADERS.length).getValues();
-    var players = {};
-    values.forEach(function (v) {
-      var name = String(v[3]);
-      var score = Number(v[5]), rank = Number(v[6]), total = Number(v[9]);
-      if (!name) return;
-      var p = players[name] = players[name] ||
-        {name: name, total: 0, games: 0, rankSum: 0, ranks: [0, 0, 0, 0], best: null};
-      p.total = Math.round((p.total + total) * 10) / 10;
-      p.games++;
-      p.rankSum += rank;
-      if (rank >= 1 && rank <= 4) p.ranks[rank - 1]++;
-      p.best = (p.best === null) ? score : Math.max(p.best, score);
-    });
-    var list = Object.keys(players).map(function (k) { return players[k]; });
-    if (list.length === 0) return;
-    list.sort(function (a, b) {
-      return (b.total - a.total) || (a.rankSum / a.games - b.rankSum / b.games);
-    });
-
-    out.getRange(row, 1).setValue(month + '度').setFontWeight('bold').setFontSize(13);
-    row++;
-    out.getRange(row, 1, 1, header.length).setValues([header])
-      .setFontWeight('bold').setBackground('#1c4531').setFontColor('#f2eee1');
-    row++;
-
-    var rows = [], prevTotal = null, prevRank = 0;
-    list.forEach(function (p, i) {
-      var r = (p.total === prevTotal) ? prevRank : i + 1; // 同ポイントは同順位
-      prevTotal = p.total; prevRank = r;
-      rows.push([r, p.name, p.total, p.games,
-                 Math.round(p.rankSum / p.games * 100) / 100,
-                 p.ranks[0], p.ranks[1], p.ranks[2], p.ranks[3],
-                 p.ranks[0] / p.games, 1 - p.ranks[3] / p.games, p.best]);
-    });
-    out.getRange(row, 1, rows.length, header.length).setValues(rows);
-    out.getRange(row, 3, rows.length, 1).setNumberFormat('+0.0;-0.0;0.0').setFontWeight('bold');
-    out.getRange(row, 5, rows.length, 1).setNumberFormat('0.00');
-    out.getRange(row, 10, rows.length, 2).setNumberFormat('0.0%');
-    out.getRange(row, 12, rows.length, 1).setNumberFormat('#,##0');
-    row += rows.length + 1; // 月度の間に1行空ける
+  listMonths_(MONTH_RESULT_RE).forEach(function (month) {
+    row = writeRankingBlock_(out, row, month, ss.getSheetByName(month + RESULT_SUFFIX));
   });
-
   if (row === 1) out.getRange(1, 1).setValue('まだ対局結果がありません');
   if (!out.getRange(1, 13).getNote()) {      // 列幅は最初の1回だけ整える(毎回やると遅いため)
-    out.autoResizeColumns(1, header.length);
+    out.autoResizeColumns(1, RANKING_HEADER.length);
     out.getRange(1, 13).setNote('列幅設定済み');
   }
+}
+
+// 画面から呼ばれる:指定した月度のブロックだけを書き直す(一番下の月なら速い)
+function refreshRanking(month) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    refreshMonthRanking_(month);
+    SpreadsheetApp.flush();
+    return 'ok';
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function refreshMonthRanking_(month) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var out = getRankingSheet_();
+  var last = out.getLastRow();
+  var colA = last ? out.getRange(1, 1, last, 1).getValues().map(function (r) { return String(r[0]); }) : [];
+  var titles = [];
+  colA.forEach(function (v, k) { if (MONTH_TITLE_RE.test(v)) titles.push({row: k + 1, month: v.slice(0, -1)}); });
+  var src = ss.getSheetByName(month + RESULT_SUFFIX);
+
+  if (titles.length) {
+    var lastTitle = titles[titles.length - 1];
+    if (lastTitle.month === month) {
+      // 一番下のブロック(今月)を書き直す
+      out.getRange(lastTitle.row, 1, last - lastTitle.row + 1, RANKING_HEADER.length).clear();
+      writeRankingBlock_(out, lastTitle.row, month, src);
+      return;
+    }
+    if (lastTitle.month < month && !titles.some(function (t) { return t.month === month; })) {
+      // 新しい月:一番下に追加する
+      writeRankingBlock_(out, last + 2, month, src);
+      return;
+    }
+  }
+  updateMonthlyRanking_(); // 過去の月の修正などは全体を作り直す
+}
+
+// 1か月分のブロックを row から書く。次のブロックを書き始める行を返す
+function writeRankingBlock_(out, row, month, src) {
+  if (!src || src.getLastRow() < 2) return row;
+  var values = src.getRange(2, 1, src.getLastRow() - 1, RESULT_HEADERS.length).getValues();
+  var players = {};
+  values.forEach(function (v) {
+    var name = String(v[3]);
+    var score = Number(v[5]), rank = Number(v[6]), total = Number(v[9]);
+    if (!name) return;
+    var p = players[name] = players[name] ||
+      {name: name, total: 0, games: 0, rankSum: 0, ranks: [0, 0, 0, 0], best: null};
+    p.total = Math.round((p.total + total) * 10) / 10;
+    p.games++;
+    p.rankSum += rank;
+    if (rank >= 1 && rank <= 4) p.ranks[rank - 1]++;
+    p.best = (p.best === null) ? score : Math.max(p.best, score);
+  });
+  var list = Object.keys(players).map(function (k) { return players[k]; });
+  if (list.length === 0) return row;
+  list.sort(function (a, b) {
+    return (b.total - a.total) || (a.rankSum / a.games - b.rankSum / b.games);
+  });
+
+  var rows = [], prevTotal = null, prevRank = 0;
+  list.forEach(function (p, i) {
+    var r = (p.total === prevTotal) ? prevRank : i + 1; // 同ポイントは同順位
+    prevTotal = p.total; prevRank = r;
+    rows.push([r, p.name, p.total, p.games,
+               Math.round(p.rankSum / p.games * 100) / 100,
+               p.ranks[0], p.ranks[1], p.ranks[2], p.ranks[3],
+               p.ranks[0] / p.games, 1 - p.ranks[3] / p.games, p.best]);
+  });
+
+  // タイトル行・見出し・本体をまとめて1回で書き込む
+  var w = RANKING_HEADER.length;
+  var title = [month + '度']; while (title.length < w) title.push('');
+  out.getRange(row, 1, rows.length + 2, w).setValues([title, RANKING_HEADER].concat(rows));
+  out.getRange(row, 1).setFontWeight('bold').setFontSize(13);
+  out.getRange(row + 1, 1, 1, w).setFontWeight('bold').setBackground('#1c4531').setFontColor('#f2eee1');
+  var b = row + 2, n = rows.length;
+  out.getRange(b, 3, n, 1).setNumberFormat('+0.0;-0.0;0.0').setFontWeight('bold');
+  out.getRange(b, 5, n, 1).setNumberFormat('0.00');
+  out.getRange(b, 10, n, 2).setNumberFormat('0.0%');
+  out.getRange(b, 12, n, 1).setNumberFormat('#,##0');
+  return b + n + 1; // 月度の間に1行空ける
 }
 
 // ---------- 以前の形式からの移行(該当シートがある時だけ自動で動く) ----------

@@ -6,7 +6,6 @@
 <title>雀卓精算</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@600;800&family=Zen+Kaku+Gothic+New:wght@400;500;700;900&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
     --bg:#0f2a1f;
@@ -95,9 +94,10 @@
   }
   .seat.dealer .wind-tile{ background:var(--gold); }
   .riichi-dot{
-    width:22px; height:14px; border-radius:7px; border:1.5px solid var(--red);
+    min-width:64px; height:34px; padding:0 12px; border-radius:17px; border:2px solid var(--red);
     cursor:pointer; flex-shrink:0; display:flex; align-items:center; justify-content:center;
-    font-size:8px; font-weight:700; color:var(--red); letter-spacing:.02em;
+    font-size:15px; font-weight:900; color:var(--red); letter-spacing:.1em;
+    user-select:none; -webkit-tap-highlight-color:transparent;
   }
   .riichi-dot.on{ background:var(--red); color:var(--tile); }
   .name{
@@ -246,6 +246,15 @@
       半荘が終わったら押してください。Mリーグルール(30000点返し・オカ+20・ウマ10-30)で計算し、「半荘結果」「月度順位」シートに反映します。月度順位はプレイヤー名で集計するので、毎回同じ名前を使ってください。
     </div>
     <div id="gameResultBox" class="hint" style="margin-top:8px; text-align:left; line-height:1.8;"></div>
+    <details style="margin-top:12px;">
+      <summary style="font-size:11.5px; color:var(--text-dim); cursor:pointer;">スプレッドシートの手動更新</summary>
+      <div class="hint" style="margin:8px 0; text-align:left; line-height:1.6;">
+        スプレッドシートを直接直した後などに使います(PCのメニュー「麻雀集計」と同じ処理です)。
+      </div>
+      <button class="clear-btn" id="manualRankingBtn">🔄 月度順位を作り直す</button>
+      <button class="clear-btn" id="manualColorBtn">🎨 シートの色分け・区切り線を整える</button>
+      <div id="manualStatus" class="hint" style="margin-top:8px;"></div>
+    </details>
     <button class="clear-btn" id="sheetsResendBtn" style="margin-top:10px; border-color:var(--gold); color:var(--gold);">🔁 未保存の記録を保存</button>
     <button class="clear-btn" id="sheetsForceResendBtn" style="margin-top:8px; font-size:11px;">⚠ 全件を強制的に再保存(重複行に注意)</button>
   </div>
@@ -256,11 +265,6 @@
     <button id="undoBtn">ひとつ戻す(元に戻す)</button>
   </div>
 
-  <div class="panel">
-    <h2>Excel出力</h2>
-    <div class="hint" style="margin-bottom:10px;">Excelで開いて集計・グラフ化したい場合はこちら(このアプリへの読み込みには使えません)。</div>
-    <button class="clear-btn" id="excelBtn" style="border-color:var(--gold); color:var(--gold);">📊 Excel形式(.xlsx)でダウンロード</button>
-  </div>
 
   <details class="settings">
     <summary>設定</summary>
@@ -361,7 +365,7 @@
     }
   }
 
-  // 1局分の結果を確定してExcel出力用の記録に積む
+  // 1局分の結果を確定して記録に積み、スプレッドシートへ送る
   function pushHandRecord(fields){
     const scoresAfter = state.players.map(p=>p.score);
     const zouzen = scoresAfter.map((s,i)=> s - state.scoreAtHandStart[i]);
@@ -371,8 +375,21 @@
       zouzen: zouzen,
       ruikei: scoresAfter.slice(),
       gameOverText: state.gameOver ? (state.overReason || '終局') : '',
+      gameId: state.gameId,
+      startedAt: state.startedAt,
       sent: false
     }, fields);
+    // 終局した局なら、半荘結果の保存に必要な情報も一緒に送る(サーバー側で半荘結果・月度順位を自動更新)
+    if(state.gameOver){
+      row.gameEnd = {
+        gameId: state.gameId,
+        startedAt: state.startedAt,
+        names: state.players.map(p=>p.name),
+        scores: scoresAfter.slice(),
+        chiicha: chiichaIndex(),
+        pot: state.pot
+      };
+    }
     state.handRecords.push(row);
     state.scoreAtHandStart = scoresAfter;
     state.potAtHandStart = state.pot;
@@ -918,7 +935,7 @@
     const isDouble = !!r.winner2;
     const type = isDouble ? 'ロン(ダブロン)' : r.agariType;
     const rows = [[
-      state.gameId, state.startedAt,
+      r.gameId || state.gameId, r.startedAt || state.startedAt,
       r.no, r.kyoku, r.dealer, type, r.houjuu, r.winner1, r.han1, riichiNames,
       r.potStart, r.riichiCountThisHand, r.potEnd, r.potCollected,
       ...byPlayer(r.zouzen), ...byPlayer(r.ruikei),
@@ -926,7 +943,7 @@
     ]];
     if(isDouble){
       const blanks = new Array(rows[0].length - 9).fill('');
-      rows.push([state.gameId, state.startedAt, r.no, r.kyoku, r.dealer, type, r.houjuu, r.winner2, r.han2, ...blanks]);
+      rows.push([r.gameId || state.gameId, r.startedAt || state.startedAt, r.no, r.kyoku, r.dealer, type, r.houjuu, r.winner2, r.han2, ...blanks]);
     }
     return rows;
   }
@@ -944,14 +961,24 @@
   function sendRecordToSheet(record, force){
     if(!hasGas) return Promise.resolve();
     if(record.sent && !force) return Promise.resolve();
-    const payload = { headers: recordHeaderRow(), rows: recordToRows(record) };
+    const payload = { headers: recordHeaderRow(), rows: recordToRows(record), gameEnd: record.gameEnd || null };
     sheetsStatusEl.textContent = `保存中…(No.${record.no})`;
     const t0 = Date.now();
     return new Promise(resolve=>{
       google.script.run
-        .withSuccessHandler(()=>{
+        .withSuccessHandler(res=>{
           record.sent = true;
-          sheetsStatusEl.textContent = `✅ 保存しました(No.${record.no}・${((Date.now()-t0)/1000).toFixed(1)}秒)`;
+          const sec = ((Date.now()-t0)/1000).toFixed(1);
+          if(res && res.results){
+            // 終局:半荘結果もサーバー側で保存済み。続けて月度順位を更新する
+            if(record.gameId === state.gameId){
+              state.resultSaved = true;
+              showGameResult(res.results);
+            }
+            refreshRankingAfter(res.month, `✅ 終局:記録・半荘結果を保存しました(No.${record.no}・${sec}秒)`);
+          } else {
+            sheetsStatusEl.textContent = `✅ 保存しました(No.${record.no}・${sec}秒)`;
+          }
           resolve();
         })
         .withFailureHandler(err=>{
@@ -999,6 +1026,49 @@
     const kyokuIdx = (state.round === '南' ? 4 : 0) + state.kyokuNum - 1;
     return ((state.dealerIndex - kyokuIdx) % 4 + 4) % 4;
   }
+  // スマホからの手動更新(PCのメニュー「麻雀集計」と同じ処理を呼ぶ)
+  function runManual(btnId, fnName, label){
+    const btn = document.getElementById(btnId);
+    const st = document.getElementById('manualStatus');
+    btn.addEventListener('click', ()=>{
+      if(!hasGas){ st.textContent = '⚠ Apps Scriptのウェブアプリから開いた時だけ使えます。'; return; }
+      btn.disabled = true;
+      st.textContent = `${label}中…`;
+      const t0 = Date.now();
+      google.script.run
+        .withSuccessHandler(()=>{
+          btn.disabled = false;
+          st.textContent = `✅ ${label}が完了しました(${((Date.now()-t0)/1000).toFixed(1)}秒)`;
+        })
+        .withFailureHandler(err=>{
+          btn.disabled = false;
+          st.textContent = `⚠ ${label}に失敗しました: ${err && err.message ? err.message : err}`;
+        })[fnName]();
+    });
+  }
+  runManual('manualRankingBtn', 'updateMonthlyRanking', '月度順位の作り直し');
+  runManual('manualColorBtn', 'refreshSheetColors', '色分けの更新');
+
+  // 半荘結果の保存後に、月度順位の更新を続けて行う(待たずに次の操作ができる)
+  function refreshRankingAfter(month, doneText){
+    if(!month){ sheetsStatusEl.textContent = doneText; return; }
+    sheetsStatusEl.textContent = doneText + '。月度順位を更新中…';
+    const t1 = Date.now();
+    google.script.run
+      .withSuccessHandler(()=>{
+        sheetsStatusEl.textContent = doneText + `。月度順位も更新しました(${((Date.now()-t1)/1000).toFixed(1)}秒)`;
+      })
+      .withFailureHandler(err=>{
+        sheetsStatusEl.textContent = doneText + `。⚠ 月度順位の更新に失敗しました(メニュー「月度順位を更新」で更新できます): ${err && err.message ? err.message : err}`;
+      })
+      .refreshRanking(month);
+  }
+
+  function showGameResult(results){
+    document.getElementById('gameResultBox').innerHTML = results.map(r =>
+      `${r.rank}位 ${esc(r.name)}　${r.score.toLocaleString()}点　<b>${r.total > 0 ? '+' : ''}${r.total.toFixed(1)}</b>`
+    ).join('<br>');
+  }
   function esc(t){ return String(t).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
   document.getElementById('endGameBtn').addEventListener('click', ()=>{
@@ -1023,7 +1093,8 @@
       pot: state.pot
     };
     google.script.run
-      .withSuccessHandler(results=>{
+      .withSuccessHandler(res=>{
+        const results = Array.isArray(res) ? res : res.results;
         btn.disabled = false;
         pushHistory();
         state.resultSaved = true;
@@ -1033,57 +1104,14 @@
         }
         render();
         addLog('対局結果を保存しました');
-        sheetsStatusEl.textContent = `✅ 対局結果を保存し、月度順位を更新しました(${((Date.now()-t0)/1000).toFixed(1)}秒)。`;
-        document.getElementById('gameResultBox').innerHTML = results.map(r =>
-          `${r.rank}位 ${esc(r.name)}　${r.score.toLocaleString()}点　<b>${r.total > 0 ? '+' : ''}${r.total.toFixed(1)}</b>`
-        ).join('<br>');
+        refreshRankingAfter(res && res.month, `✅ 対局結果を保存しました(${((Date.now()-t0)/1000).toFixed(1)}秒)`);
+        showGameResult(results);
       })
       .withFailureHandler(err=>{
         btn.disabled = false;
         sheetsStatusEl.textContent = `⚠ 対局結果を保存できませんでした: ${err && err.message ? err.message : err}`;
       })
       .saveGameResult(payload);
-  });
-
-  document.getElementById('excelBtn').addEventListener('click', ()=>{
-    if(typeof XLSX === 'undefined'){
-      alert('Excel出力用ライブラリの読み込みに失敗しました。通信環境を確認してもう一度お試しください。');
-      return;
-    }
-    const names = state.players.map(p=>p.name);
-
-    const recordHeader = recordHeaderRow();
-    const recordRows = (state.handRecords || []).flatMap(r => recordToRows(r));
-    const wsRecords = XLSX.utils.aoa_to_sheet([recordHeader, ...recordRows]);
-
-    const historyRows = [
-      ['局', '本場', '内容', ...names],
-      ...(state.scoreHistory || []).map(r => [r.kyoku, r.honba, r.event, ...r.scores])
-    ];
-    const wsHistory = XLSX.utils.aoa_to_sheet(historyRows);
-
-    const summaryRows = [
-      ['項目', '内容'],
-      ['現在の局', state.round + state.kyokuNum + '局'],
-      ['本場', state.honba],
-      ['供託棒', state.pot],
-      ['親', names[state.dealerIndex]],
-      ['終局', state.gameOver ? state.overReason : 'いいえ'],
-      [],
-      ['プレイヤー', '現在の点数'],
-      ...state.players.map(p => [p.name, p.score])
-    ];
-    const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
-
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, wsSummary, '現在の状況');
-    XLSX.utils.book_append_sheet(wb, wsRecords, '対局記録');
-    XLSX.utils.book_append_sheet(wb, wsHistory, '操作履歴');
-
-    const now = new Date();
-    const fname = `mahjong_score_${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.xlsx`;
-    XLSX.writeFile(wb, fname);
-    addLog(`Excelファイルを出力しました(${fname})`);
   });
 
   render();
