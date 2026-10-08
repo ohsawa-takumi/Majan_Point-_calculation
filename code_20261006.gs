@@ -629,3 +629,82 @@ function collectGameIds_() {
   });
   return ids;
 }
+
+// =====================================================
+// シートを直接編集したときの自動再計算
+//   「YYYY年MM月 半荘結果」で プレイヤー・席順・最終持ち点 を書き換えると、
+//   その対局の 順位・素点pt・順位点・合計pt を計算し直し、月度順位も更新する
+//   (順位〜合計ptを手で直した場合は、そのまま月度順位だけ更新する)
+// =====================================================
+function onEdit(e) {
+  if (!e || !e.range) return;
+  var sheet = e.range.getSheet();
+  if (!MONTH_RESULT_RE.test(sheet.getName())) return;
+
+  var r1 = e.range.getRow(), r2 = e.range.getLastRow();
+  var c1 = e.range.getColumn(), c2 = e.range.getLastColumn();
+  if (r2 < 2) return;                       // 見出し行だけの編集は無視
+  r1 = Math.max(r1, 2);
+
+  var ss = sheet.getParent();
+  try {
+    var touchesInput = c1 <= 6 && c2 >= 4;  // D:プレイヤー / E:席順 / F:最終持ち点
+    var msgs = [];
+    if (touchesInput) {
+      var ids = sheet.getRange(r1, 1, r2 - r1 + 1, 1).getValues()
+        .map(function (r) { return String(r[0]); })
+        .filter(function (id, i, arr) { return id && arr.indexOf(id) === i; });
+      ids.forEach(function (id) {
+        var m = recalcGame_(sheet, id);
+        if (m) msgs.push(m);
+      });
+    }
+    updateMonthlyRanking_();
+    ss.toast(msgs.length ? msgs.join('\n') : '順位・ptと月度順位を更新しました。', '麻雀集計', msgs.length ? 10 : 4);
+  } catch (err) {
+    ss.toast('自動再計算でエラー:' + err.message + '\nメニュー「麻雀集計 > 月度順位を更新」を試してください。', '麻雀集計', 10);
+  }
+}
+
+// 指定した対局IDの4行を、シート上の 席順・最終持ち点 から計算し直す
+function recalcGame_(sheet, gameId) {
+  var last = sheet.getLastRow();
+  var values = sheet.getRange(2, 1, last - 1, RESULT_HEADERS.length).getValues();
+  var rows = [];
+  values.forEach(function (v, i) {
+    if (String(v[0]) === gameId) rows.push({row: i + 2, v: v});
+  });
+  if (rows.length !== 4) return '⚠ ' + gameId + ':行が4つではないため計算し直せませんでした。';
+
+  var players = rows.map(function (r) {
+    return {
+      row: r.row,
+      name: String(r.v[3]).trim(),
+      seat: WINDS.indexOf(String(r.v[4]).trim()) + 1,
+      score: Number(String(r.v[5]).replace(/,/g, ''))
+    };
+  });
+  if (players.some(function (p) { return p.seat < 1; })) return '⚠ ' + gameId + ':席順は 東・南・西・北 で入力してください。';
+  if (players.some(function (p) { return isNaN(p.score) || String(p.score) === ''; })) return '⚠ ' + gameId + ':最終持ち点が数値ではありません。';
+  if (players.some(function (p) { return PLAYERS.indexOf(p.name) < 0; })) return '⚠ ' + gameId + ':メンバー外の名前があります。';
+
+  // 持ち点の高い順、同点なら起家に近い順(最終持ち点には残り供託が含まれている前提)
+  players.sort(function (a, b) { return (b.score - a.score) || (a.seat - b.seat); });
+  players.forEach(function (p, idx) {
+    var sotenTenth = Math.round((p.score - RETURN_POINT) / 100);
+    sheet.getRange(p.row, 7, 1, 4).setValues([[
+      idx + 1, sotenTenth / 10, RANK_POINTS[idx], (sotenTenth + RANK_POINTS[idx] * 10) / 10
+    ]]);
+  });
+
+  // 対局ID → 順位 で並べ直し、色分けし直す
+  sheet.getRange(2, 1, last - 1, RESULT_HEADERS.length)
+    .sort([{column: 1, ascending: true}, {column: 7, ascending: true}]);
+  drawGameDividers_(sheet, 1);
+
+  var sum = players.reduce(function (a, p) { return a + p.score; }, 0);
+  if (sum !== TOTAL_POINTS) {
+    return '⚠ ' + gameId + ':計算し直しましたが、4人の持ち点合計が ' + sum.toLocaleString() + ' 点です(通常は100,000点)。';
+  }
+  return '';
+}
