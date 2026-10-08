@@ -946,11 +946,12 @@
     if(record.sent && !force) return Promise.resolve();
     const payload = { headers: recordHeaderRow(), rows: recordToRows(record) };
     sheetsStatusEl.textContent = `保存中…(No.${record.no})`;
+    const t0 = Date.now();
     return new Promise(resolve=>{
       google.script.run
         .withSuccessHandler(()=>{
           record.sent = true;
-          sheetsStatusEl.textContent = `✅ 保存しました(No.${record.no})`;
+          sheetsStatusEl.textContent = `✅ 保存しました(No.${record.no}・${((Date.now()-t0)/1000).toFixed(1)}秒)`;
           resolve();
         })
         .withFailureHandler(err=>{
@@ -1012,6 +1013,7 @@
     const btn = document.getElementById('endGameBtn');
     btn.disabled = true;
     sheetsStatusEl.textContent = '対局結果を保存中…';
+    const t0 = Date.now();
     const payload = {
       gameId: state.gameId,
       startedAt: state.startedAt,
@@ -1031,7 +1033,7 @@
         }
         render();
         addLog('対局結果を保存しました');
-        sheetsStatusEl.textContent = '✅ 対局結果を保存し、月度順位を更新しました。';
+        sheetsStatusEl.textContent = `✅ 対局結果を保存し、月度順位を更新しました(${((Date.now()-t0)/1000).toFixed(1)}秒)。`;
         document.getElementById('gameResultBox').innerHTML = results.map(r =>
           `${r.rank}位 ${esc(r.name)}　${r.score.toLocaleString()}点　<b>${r.total > 0 ? '+' : ''}${r.total.toFixed(1)}</b>`
         ).join('<br>');

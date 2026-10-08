@@ -102,6 +102,8 @@ function getMonthSheet_(month, suffix, headers) {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers])
       .setFontWeight('bold').setBackground('#1c4531').setFontColor('#f2eee1');
     sheet.setFrozenRows(1);
+    sheet.setColumnWidths(1, headers.length, 110); // 列幅は作成時に1回だけ設定
+    sheet.setColumnWidth(1, 150);                  // 対局ID
   }
   return sheet;
 }
@@ -173,6 +175,7 @@ function saveRecord(data) {
     }
     var sheet = getMonthSheet_(month, RECORD_SUFFIX, data.headers);
     writeRecordRows_(sheet, rows);
+    SpreadsheetApp.flush(); // 書き込みをすぐに確定させる
     return 'ok';
   } finally {
     lock.releaseLock();
@@ -201,6 +204,7 @@ function saveGameResult(data) {
     migrateLegacySheets_();
     var results = saveResult_(data);
     updateMonthlyRanking_();
+    SpreadsheetApp.flush(); // 書き込みをすぐに確定させる
     return results;
   } finally {
     lock.releaseLock();
@@ -253,7 +257,6 @@ function writeResultRows_(sheet, rows, replaceSameId) {
       .sort([{column: 1, ascending: true}, {column: 7, ascending: true}]); // 対局ID → 順位
   }
   drawGameDividers_(sheet, 1);
-  sheet.autoResizeColumns(1, RESULT_HEADERS.length);
 }
 
 // Mリーグ準拠の順位・ポイント計算
@@ -362,13 +365,19 @@ function updateMonthlyRanking_() {
   });
 
   if (row === 1) out.getRange(1, 1).setValue('まだ対局結果がありません');
-  protectAll_(); // ロックが外れているシートがあればかけ直す
-  out.autoResizeColumns(1, header.length);
+  if (!out.getRange(1, 13).getNote()) {      // 列幅は最初の1回だけ整える(毎回やると遅いため)
+    out.autoResizeColumns(1, header.length);
+    out.getRange(1, 13).setNote('列幅設定済み');
+  }
 }
 
 // ---------- 以前の形式からの移行(該当シートがある時だけ自動で動く) ----------
 function migrateLegacySheets_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+  // 移行が済んでいれば何もしない(毎回の保存を軽くするため)
+  var props = PropertiesService.getDocumentProperties();
+  if (props.getProperty('legacyMigrated') === '1' &&
+      !ss.getSheetByName(LEGACY_RESULTS) && !ss.getSheetByName(LEGACY_RECORDS)) return;
 
   // 1枚形式の「半荘結果」→ 月別に振り分け、元は「半荘結果(旧)」に改名
   var legacyRes = ss.getSheetByName(LEGACY_RESULTS);
@@ -416,6 +425,7 @@ function migrateLegacySheets_() {
     }
     renameToOld_(legacyRec, LEGACY_RECORDS);
   }
+  props.setProperty('legacyMigrated', '1');
 }
 
 // ---------- 見た目の調整 ----------
@@ -432,6 +442,7 @@ function drawGameDividers_(sheet, idCol) {
 
   var ids = sheet.getRange(2, idCol, last - 1, 1).getValues();
   var backgrounds = [];
+  var edges = [];
   var band = 0;
   for (var i = 0; i < ids.length; i++) {
     if (i > 0 && String(ids[i][0]) !== String(ids[i - 1][0])) band++;
@@ -441,11 +452,15 @@ function drawGameDividers_(sheet, idCol) {
     backgrounds.push(row);
     // 次の行で対局が変わる(または最終行)なら下に太線
     if (i === ids.length - 1 || String(ids[i][0]) !== String(ids[i + 1][0])) {
-      sheet.getRange(i + 2, 1, 1, cols)
-        .setBorder(null, null, true, null, null, null, '#1c4531', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+      edges.push(sheet.getRange(i + 2, 1, 1, cols).getA1Notation());
     }
   }
   data.setBackgrounds(backgrounds);
+  // 区切り線はまとめて1回で引く(1本ずつ引くと記録が増えるほど遅くなるため)
+  if (edges.length) {
+    sheet.getRangeList(edges)
+      .setBorder(null, null, true, null, null, null, '#1c4531', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+  }
 }
 
 // 以前の形式(席順(起家=1) に 1〜4)を「席順」+ 東南西北 に置き換える
